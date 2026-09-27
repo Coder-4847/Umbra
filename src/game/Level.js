@@ -7,6 +7,7 @@ import { moveAndCollide } from '../world/collision.js';
 import { Player, PLAYER_SPEED } from '../entities/Player.js';
 import { Guard, GuardState } from '../entities/Guard.js';
 import { Body } from '../entities/Body.js';
+import { SecurityCamera } from '../entities/SecurityCamera.js';
 import { angleDiff } from '../core/math.js';
 
 const TAKEDOWN_RANGE = 36;
@@ -22,6 +23,8 @@ const LOUD_KILL_NOISE_RADIUS = 320;
 // Walls muffle sound: guards without line of sight to a noise hear it at reduced range.
 const MUFFLED_NOISE_FACTOR = 0.6;
 const BACKUP_RADIUS = 360;
+// Cameras are wired into the security system, so their alarms reach further than a shout.
+const CAMERA_ALARM_RADIUS = 520;
 const PICKUP_RANGE = 22;
 
 const COLOR = {
@@ -62,17 +65,21 @@ export class Level extends EventEmitter {
     this.bodyLayer = new Container();
     this.coneLayer = new Container();
     this.entityLayer = new Container();
+    // Cameras hang from the ceiling, so they draw above the people walking under them.
+    this.cameraLayer = new Container();
     this.root.addChild(
       this.tilemap.view,
       this.markers,
       this.bodyLayer,
       this.coneLayer,
       this.entityLayer,
+      this.cameraLayer,
       this.effects.view,
     );
 
     this.player = new Player(data.spawn.x, data.spawn.y);
     this.guards = data.guards.map((guardConfig) => this._addGuard(guardConfig));
+    this.cameras = data.cameras.map((cameraConfig) => this._addCamera(cameraConfig));
     this.entityLayer.addChild(this.player.view);
     this.bodies = [];
 
@@ -110,6 +117,7 @@ export class Level extends EventEmitter {
     if (!this.completed) {
       const ctx = { player, bodies: this.bodies };
       for (const guard of this.guards) guard.update(dt, ctx);
+      for (const camera of this.cameras) camera.update(dt, ctx);
       this._separateGuards();
     }
 
@@ -345,13 +353,38 @@ export class Level extends EventEmitter {
     if (player.dead) this._fail();
   }
 
-  _onBodyFound(finder, body) {
+  _onBodyFound(finder, body, radius = BACKUP_RADIUS) {
     this.stats.bodiesDiscovered++;
-    this.effects.ring(finder.x, finder.y, BACKUP_RADIUS, COLOR.body, 0.8);
+    this.effects.ring(finder.x, finder.y, radius, COLOR.body, 0.8);
     for (const guard of this.guards) {
       if (guard === finder) continue;
-      if (Math.hypot(guard.x - finder.x, guard.y - finder.y) > BACKUP_RADIUS) continue;
+      if (Math.hypot(guard.x - finder.x, guard.y - finder.y) > radius) continue;
       guard.investigate(body.x, body.y);
+    }
+  }
+
+  // --- cameras ----------------------------------------------------------------
+
+  _addCamera(config) {
+    const camera = new SecurityCamera({ tilemap: this.tilemap, ...config });
+    this.coneLayer.addChild(camera.coneView);
+    this.cameraLayer.addChild(camera.view);
+
+    camera.on('alarm', (_, x, y) => this._onCameraSighting(camera, x, y, true));
+    camera.on('report', (_, x, y) => this._onCameraSighting(camera, x, y, false));
+    camera.on('bodyFound', (_, body) => this._onBodyFound(camera, body, CAMERA_ALARM_RADIUS));
+    return camera;
+  }
+
+  /** Guards on the security net converge on what the camera sees; follow-up reports keep them on target. */
+  _onCameraSighting(camera, x, y, isNewAlarm) {
+    if (isNewAlarm) {
+      this.stats.detections++;
+      this.effects.ring(camera.x, camera.y, CAMERA_ALARM_RADIUS, COLOR.alarm, 1);
+    }
+    for (const guard of this.guards) {
+      if (Math.hypot(guard.x - camera.x, guard.y - camera.y) > CAMERA_ALARM_RADIUS) continue;
+      guard.alertTo(x, y);
     }
   }
 
@@ -399,6 +432,7 @@ export class Level extends EventEmitter {
 
   destroy() {
     for (const guard of this.guards) guard.removeAllListeners();
+    for (const camera of this.cameras) camera.removeAllListeners();
     this.removeAllListeners();
     this.root.destroy({ children: true });
   }

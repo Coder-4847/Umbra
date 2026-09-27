@@ -88,5 +88,10 @@
         {"x": 49, "y": 20, "wait": 1}
       ]
     }
+  ],
+  "cameras": [
+    {"x": 40, "y": 2, "look": "S", "sweep": 120, "sweepTime": 3, "pause": 1},
+    {"x": 11, "y": 30, "look": "SE", "sweep": 60},
+    {"x": 29, "y": 13, "look": "N", "sweep": 0}
   ]
 }

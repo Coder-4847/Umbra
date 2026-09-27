@@ -4,7 +4,7 @@ import { formatLevelJson } from '../levels/format.js';
 import { PLAYTEST_STORAGE_KEY } from '../levels/playtest.js';
 import { GridMap, TILE_SIZE } from '../world/tiles.js';
 import { raycast } from '../world/raycast.js';
-import { VISION_FOV, VISION_RANGE } from '../entities/guardVision.js';
+import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
 
 const DRAFT_KEY = 'umbra.editor.draft';
 const HISTORY_LIMIT = 200;
@@ -22,6 +22,7 @@ const TOOLS = [
   { id: 'exit', key: '6', label: 'Exit', char: 'E' },
   { id: 'intel', key: '7', label: 'Intel', char: 'i' },
   { id: 'guard', key: 'g', label: 'Guard' },
+  { id: 'camera', key: 'c', label: 'Camera' },
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
@@ -37,6 +38,9 @@ const COLOR = {
   intel: '#ffd166',
   cone: 'rgba(255, 243, 176, 0.13)',
   coneFaint: 'rgba(255, 243, 176, 0.05)',
+  camera: '#7dd3fc',
+  cameraCone: 'rgba(125, 211, 252, 0.16)',
+  cameraConeFaint: 'rgba(125, 211, 252, 0.06)',
 };
 
 const TOOL_HINTS = {
@@ -48,7 +52,8 @@ const TOOL_HINTS = {
   exit: 'Click to toggle an exit tile',
   intel: 'Click to toggle an intel pickup',
   guard: 'Click to place a guard, keep clicking to add waypoints · Esc or right-click to finish',
-  select: 'Click a waypoint to select, drag to move · Del removes it (Shift+Del removes the guard)',
+  camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
+  select: 'Click a waypoint or camera to select, drag to move · Del removes it (Shift+Del removes the whole guard)',
 };
 
 // --- document model ------------------------------------------------------------
@@ -60,7 +65,7 @@ function blankDoc(cols = 40, rows = 28) {
     Array.from({ length: cols }, (_, x) => (x === 0 || y === 0 || x === cols - 1 || y === rows - 1 ? '#' : '.')),
   );
   tiles[2][2] = 'P';
-  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [] };
+  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [] };
 }
 
 function docFromJson(json) {
@@ -78,6 +83,7 @@ function docFromJson(json) {
         Array.isArray(wp) ? { x: wp[0], y: wp[1], wait: wp[2], look: wp[3] } : { ...wp },
       ),
     })),
+    cameras: (json.cameras ?? []).map((c) => ({ ...c })),
   };
 }
 
@@ -95,6 +101,9 @@ function jsonFromDoc(doc) {
       target: g.target || undefined,
       patrol: g.patrol.map(({ x, y, wait, look }) => ({ x, y, wait: wait || undefined, look: look ?? undefined })),
     })),
+    cameras: doc.cameras.length
+      ? doc.cameras.map(({ x, y, look, sweep, sweepTime, pause }) => ({ x, y, look, sweep, sweepTime, pause }))
+      : undefined,
   };
 }
 
@@ -102,11 +111,14 @@ const docText = (doc) => formatLevelJson(jsonFromDoc(doc));
 
 // --- state ---------------------------------------------------------------------
 
+/** At most one thing is selected: a guard (optionally one of its waypoints) or a camera. */
+const noSelection = () => ({ guard: -1, wp: -1, camera: -1 });
+
 const state = {
   doc: blankDoc(),
   savedText: null,
   tool: 'wall',
-  sel: { guard: -1, wp: -1 },
+  sel: noSelection(),
   zoom: 20,
   panX: 20,
   panY: 20,
@@ -177,11 +189,13 @@ function onDocChanged(structural = false) {
 }
 
 function loadDoc(doc, savedText) {
+  // Drafts autosaved before cameras existed have no cameras list.
+  doc.cameras ??= [];
   state.doc = doc;
   state.savedText = savedText;
   undoStack.length = 0;
   redoStack.length = 0;
-  state.sel = { guard: -1, wp: -1 };
+  state.sel = noSelection();
   fitView();
   onDocChanged(true);
 }
@@ -210,15 +224,29 @@ function updateDocLabel() {
 // --- selection -----------------------------------------------------------------
 
 function select(guard, wp) {
-  state.sel = { guard, wp };
+  state.sel = { ...noSelection(), guard, wp };
+  renderPanel();
+  render();
+}
+
+function selectCamera(camera) {
+  state.sel = { ...noSelection(), camera };
   renderPanel();
   render();
 }
 
 function clampSelection() {
+  if (state.sel.camera >= 0) {
+    if (!state.doc.cameras[state.sel.camera]) state.sel = noSelection();
+    return;
+  }
   const guard = state.doc.guards[state.sel.guard];
-  if (!guard) state.sel = { guard: -1, wp: -1 };
+  if (!guard) state.sel = noSelection();
   else if (state.sel.wp >= guard.patrol.length) state.sel.wp = guard.patrol.length - 1;
+}
+
+function findCamera(cell) {
+  return state.doc.cameras.findIndex((c) => c.x === cell.x && c.y === cell.y);
 }
 
 function findWaypoint(cell) {
@@ -232,6 +260,13 @@ function findWaypoint(cell) {
 }
 
 function deleteSelection(wholeGuard) {
+  if (state.sel.camera >= 0) {
+    checkpoint();
+    state.doc.cameras.splice(state.sel.camera, 1);
+    state.sel = noSelection();
+    onDocChanged(true);
+    return;
+  }
   const { guard: gi, wp: wi } = state.sel;
   const guard = state.doc.guards[gi];
   if (!guard) return;
@@ -241,7 +276,7 @@ function deleteSelection(wholeGuard) {
     state.sel.wp = Math.min(wi, guard.patrol.length - 1);
   } else {
     state.doc.guards.splice(gi, 1);
-    state.sel = { guard: -1, wp: -1 };
+    state.sel = noSelection();
   }
   onDocChanged(true);
 }
@@ -251,7 +286,7 @@ function deleteSelection(wholeGuard) {
 function setTool(id) {
   state.tool = id;
   for (const btn of toolsNav.querySelectorAll('button')) btn.classList.toggle('active', btn.dataset.tool === id);
-  if (id !== 'guard' && id !== 'select') state.sel = { guard: -1, wp: -1 };
+  if (id !== 'guard' && id !== 'camera' && id !== 'select') state.sel = noSelection();
   renderPanel();
   render();
   renderStatus();
@@ -319,17 +354,40 @@ function onPointerDown(e) {
     } else {
       checkpoint();
       doc.guards.push({ route: 'loop', target: false, patrol: [{ x: cell.x, y: cell.y }] });
-      state.sel = { guard: doc.guards.length - 1, wp: 0 };
+      state.sel = { ...noSelection(), guard: doc.guards.length - 1, wp: 0 };
     }
+    onDocChanged(true);
+    return;
+  }
+
+  if (tool === 'camera') {
+    if (erase) {
+      select(-1, -1);
+      return;
+    }
+    if (!cell.inside) return;
+    const hit = findCamera(cell);
+    if (hit >= 0) {
+      selectCamera(hit);
+      state.drag = { mode: 'move-camera', checkpointed: false };
+      return;
+    }
+    checkpoint();
+    doc.cameras.push({ x: cell.x, y: cell.y, look: 'S', sweep: 90 });
+    state.sel = { ...noSelection(), camera: doc.cameras.length - 1 };
     onDocChanged(true);
     return;
   }
 
   if (tool === 'select') {
     const hit = cell.inside ? findWaypoint(cell) : null;
+    const cameraHit = cell.inside && !hit ? findCamera(cell) : -1;
     if (hit) {
       select(hit.guard, hit.wp);
       state.drag = { mode: 'move', checkpointed: false };
+    } else if (cameraHit >= 0) {
+      selectCamera(cameraHit);
+      state.drag = { mode: 'move-camera', checkpointed: false };
     } else {
       select(-1, -1);
     }
@@ -380,15 +438,18 @@ function onPointerMove(e) {
       x: Math.min(Math.max(cell.x, 0), cols() - 1),
       y: Math.min(Math.max(cell.y, 0), rows() - 1),
     };
-  } else if (drag?.mode === 'move' && cell.inside) {
-    const wp = state.doc.guards[state.sel.guard]?.patrol[state.sel.wp];
-    if (wp && (wp.x !== cell.x || wp.y !== cell.y)) {
+  } else if ((drag?.mode === 'move' || drag?.mode === 'move-camera') && cell.inside) {
+    const item =
+      drag.mode === 'move'
+        ? state.doc.guards[state.sel.guard]?.patrol[state.sel.wp]
+        : state.doc.cameras[state.sel.camera];
+    if (item && (item.x !== cell.x || item.y !== cell.y)) {
       if (!drag.checkpointed) {
         checkpoint();
         drag.checkpointed = true;
       }
-      wp.x = cell.x;
-      wp.y = cell.y;
+      item.x = cell.x;
+      item.y = cell.y;
       onDocChanged(true);
     }
   }
@@ -450,7 +511,7 @@ function onKeyDown(e) {
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
     deleteSelection(e.shiftKey);
-  } else if (key === 'c' && !mod) {
+  } else if (key === 'o' && !mod) {
     state.showAllCones = !state.showAllCones;
     render();
   } else if (key === 'f' && !mod) {
@@ -566,6 +627,7 @@ function render() {
   }
 
   drawGuards(z);
+  drawCameras(z);
 
   if (state.drag?.mode === 'rect') {
     const { start, end, ch } = state.drag;
@@ -675,6 +737,60 @@ function drawGuards(z) {
   });
 }
 
+/** Cameras show everything their sweep can ever cover, which is what matters when designing around them. */
+function drawCameras(z) {
+  const map = gridMap();
+  const scale = z / TILE_SIZE;
+  state.doc.cameras.forEach((camera, ci) => {
+    const selected = ci === state.sel.camera;
+    const cx = (camera.x + 0.5) * z;
+    const cy = (camera.y + 0.5) * z;
+    const look = lookRadians(camera.look) ?? 0;
+    const sweep = ((camera.sweep ?? 90) * Math.PI) / 180;
+
+    if ((selected || state.showAllCones) && !map.isSolid(camera.x, camera.y)) {
+      const ox = (camera.x + 0.5) * TILE_SIZE;
+      const oy = (camera.y + 0.5) * TILE_SIZE;
+      const arc = Math.min(Math.PI * 2, sweep + CAMERA_FOV);
+      const rays = Math.max(CONE_RAYS, Math.ceil((arc * 180) / Math.PI / 3));
+      ctx.fillStyle = selected ? COLOR.cameraCone : COLOR.cameraConeFaint;
+      ctx.beginPath();
+      ctx.moveTo(ox * scale, oy * scale);
+      for (let i = 0; i <= rays; i++) {
+        const angle = look - arc / 2 + (arc * i) / rays;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const dist = raycast(map, ox, oy, dx, dy, CAMERA_RANGE);
+        ctx.lineTo((ox + dx * dist) * scale, (oy + dy * dist) * scale);
+      }
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(look);
+    ctx.fillStyle = '#2a2d38';
+    ctx.strokeStyle = COLOR.camera;
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(-z * 0.3, -z * 0.22, z * 0.6, z * 0.44);
+    ctx.strokeRect(-z * 0.3, -z * 0.22, z * 0.6, z * 0.44);
+    ctx.fillStyle = COLOR.camera;
+    ctx.beginPath();
+    ctx.arc(z * 0.32, 0, z * 0.12, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    if (selected) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, z * 0.55, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  });
+}
+
 function renderStatus() {
   const hint = TOOL_HINTS[state.tool];
   if (!state.hover) {
@@ -691,8 +807,8 @@ function renderStatus() {
 const esc = (value) =>
   String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-function lookOptions(look) {
-  const options = ['<option value="">—</option>'];
+function lookOptions(look, allowNone = true) {
+  const options = allowNone ? ['<option value="">—</option>'] : [];
   for (const dir of Object.keys(COMPASS)) {
     options.push(`<option value="${dir}" ${String(look).toUpperCase() === dir ? 'selected' : ''}>${dir}</option>`);
   }
@@ -703,6 +819,22 @@ function lookOptions(look) {
 function renderPanel() {
   const { doc, sel } = state;
   const guard = doc.guards[sel.guard];
+  const camera = doc.cameras[sel.camera];
+
+  const cameraSection = camera
+    ? `<section>
+        <h2>Camera ${sel.camera + 1}</h2>
+        <div class="row">
+          <label>Facing <select data-cam="look">${lookOptions(camera.look, false)}</select></label>
+          <label>Sweep (°) <input type="number" min="0" max="360" step="15" data-cam="sweep" value="${camera.sweep ?? ''}" placeholder="90"></label>
+        </div>
+        <div class="row">
+          <label>Pass time (s) <input type="number" min="0.5" step="0.5" data-cam="sweepTime" value="${camera.sweepTime ?? ''}" placeholder="3"></label>
+          <label>End pause (s) <input type="number" min="0" step="0.5" data-cam="pause" value="${camera.pause ?? ''}" placeholder="1"></label>
+        </div>
+        <button data-action="delete-camera" class="danger">Delete camera</button>
+      </section>`
+    : '';
 
   const guardSection = guard
     ? `<section>
@@ -758,6 +890,7 @@ function renderPanel() {
       <button data-action="border">Wall the border</button>
     </section>
     ${guardSection}
+    ${cameraSection}
     <section>
       <h2>Validation</h2>
       <div id="validation"></div>
@@ -765,11 +898,11 @@ function renderPanel() {
     <section class="help">
       <h2>Shortcuts</h2>
       <dl>
-        <dt>1–7, G, V</dt><dd>Tools</dd>
+        <dt>1–7, G, C, V</dt><dd>Tools</dd>
         <dt>Shift+drag</dt><dd>Rectangle fill</dd>
         <dt>Right-drag</dt><dd>Erase to floor</dd>
         <dt>Space+drag / wheel</dt><dd>Pan / zoom</dd>
-        <dt>F / C</dt><dd>Fit view / toggle all cones</dd>
+        <dt>F / O</dt><dd>Fit view / toggle all cones</dd>
         <dt>Del, Shift+Del</dt><dd>Delete waypoint / guard</dd>
         <dt>Ctrl+Z / Ctrl+Y</dt><dd>Undo / redo</dd>
         <dt>Ctrl+S / Ctrl+Enter</dt><dd>Save / playtest</dd>
@@ -823,6 +956,13 @@ function onPanelChange(e) {
       wp.look = el.value === '' ? undefined : Number.isNaN(Number(el.value)) ? el.value : Number(el.value);
     }
     onDocChanged();
+  } else if (el.dataset.cam) {
+    checkpoint();
+    const camera = doc.cameras[state.sel.camera];
+    const field = el.dataset.cam;
+    if (field === 'look') camera.look = Number.isNaN(Number(el.value)) ? el.value : Number(el.value);
+    else camera[field] = el.value === '' ? undefined : Math.max(0, Number(el.value));
+    onDocChanged();
   }
 }
 
@@ -850,7 +990,7 @@ function onPanelClick(e) {
     deleteSelection(false);
     return;
   }
-  if (action === 'delete-guard') {
+  if (action === 'delete-guard' || action === 'delete-camera') {
     deleteSelection(true);
     return;
   }

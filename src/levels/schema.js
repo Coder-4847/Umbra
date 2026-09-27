@@ -14,12 +14,18 @@
  *   "guards": [
  *     { "route": "pingpong", "target": true,
  *       "patrol": [{ "x": 2, "y": 1, "wait": 1.5, "look": "S" }, [4, 1]] }
+ *   ],
+ *   "cameras": [
+ *     { "x": 5, "y": 1, "look": "S", "sweep": 90, "sweepTime": 3, "pause": 1 }
  *   ]
  * }
  *
  * Waypoints are tile coordinates, as { x, y, wait?, look? } or [x, y, wait?, look?].
  * `look` is a compass direction (N, NE, E, ...) or degrees clockwise from east,
  * held while waiting. route is "loop" (default) or "pingpong".
+ * Cameras are ceiling-mounted on a floor tile: `look` (required) is the center
+ * of the sweep, `sweep` its width in degrees (default 90, 0 = fixed),
+ * `sweepTime` seconds per pass (default 3), `pause` seconds held at each end (default 1).
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
@@ -27,7 +33,7 @@ import { GridMap, Tile, tileCenter } from '../world/tiles.js';
 import { findPath } from '../world/pathfinding.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { angleDiff } from '../core/math.js';
-import { VISION_FOV, VISION_RANGE } from '../entities/guardVision.js';
+import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
 
 export const FORMAT_VERSION = 1;
 
@@ -95,6 +101,7 @@ function readLevel(json, errors) {
   if (!tiles) return null;
   const map = new GridMap(tiles.cols, tiles.rows, tiles.grid);
   const guards = readGuards(json.guards ?? [], map, errors);
+  const cameras = readCameras(json.cameras ?? [], map, errors);
   const objectives = readObjectives(json.objectives, tiles, guards, errors);
 
   return {
@@ -105,7 +112,43 @@ function readLevel(json, errors) {
     objectives,
     ...tiles,
     guards,
+    cameras,
   };
+}
+
+function readCameras(list, map, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"cameras" must be an array');
+    return [];
+  }
+  const cameras = [];
+  list.forEach((camera, ci) => {
+    const label = `Camera ${ci + 1}`;
+    if (!camera || typeof camera !== 'object') {
+      errors.push(`${label} must be an object`);
+      return;
+    }
+    const { x, y } = camera;
+    if (!Number.isInteger(x) || !Number.isInteger(y)) {
+      errors.push(`${label}: x and y must be whole tile coordinates`);
+      return;
+    }
+    if (map.isSolid(x, y)) errors.push(`${label} at (${x},${y}) must be on a floor tile (cameras hang from the ceiling)`);
+    if (camera.look == null) {
+      errors.push(`${label}: "look" is required`);
+      return;
+    }
+    const look = readLook(camera.look, label, errors);
+    const sweep = camera.sweep ?? 90;
+    const sweepTime = camera.sweepTime ?? 3;
+    const pause = camera.pause ?? 1;
+    if (typeof sweep !== 'number' || sweep < 0 || sweep > 360) errors.push(`${label}: sweep must be 0–360 degrees`);
+    if (typeof sweepTime !== 'number' || sweepTime <= 0) errors.push(`${label}: sweepTime must be a positive number of seconds`);
+    if (typeof pause !== 'number' || pause < 0) errors.push(`${label}: pause must be seconds >= 0`);
+    if (look === null) return;
+    cameras.push({ ...tileCenter(x, y), tx: x, ty: y, look, sweep: (sweep * Math.PI) / 180, sweepTime, pause });
+  });
+  return cameras;
 }
 
 function readTiles(tiles, errors) {
@@ -261,7 +304,17 @@ function checkPlayability(level, errors, warnings) {
     }
   });
 
-  if (level.guards.length === 0) warnings.push('Level has no guards');
+  level.cameras.forEach((camera, ci) => {
+    const dist = Math.hypot(spawn.x - camera.x, spawn.y - camera.y);
+    if (dist > CAMERA_RANGE) return;
+    const reach = camera.sweep / 2 + CAMERA_FOV / 2;
+    const angle = Math.atan2(spawn.y - camera.y, spawn.x - camera.x);
+    if (Math.abs(angleDiff(angle, camera.look)) <= reach && hasLineOfSight(map, camera.x, camera.y, spawn.x, spawn.y)) {
+      warnings.push(`Camera ${ci + 1}'s sweep covers the player spawn`);
+    }
+  });
+
+  if (level.guards.length === 0 && level.cameras.length === 0) warnings.push('Level has no guards or cameras');
   if (level.exits.length > 0 && !level.objectives.includes('exit')) warnings.push('Exit tiles are placed but "exit" is not an objective');
   if (level.intel.length > 0 && !level.objectives.includes('collect')) warnings.push('Intel is placed but "collect" is not an objective');
 }

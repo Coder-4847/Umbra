@@ -3,7 +3,7 @@ import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
 import { findPath } from '../world/pathfinding.js';
 import { angleDiff, clamp, lerpColor, turnToward } from '../core/math.js';
-import { VISION_FOV, VISION_RANGE } from './guardVision.js';
+import { VISION_FOV, VISION_RANGE } from './vision.js';
 
 export const GuardState = Object.freeze({
   PATROL: 'patrol',
@@ -112,9 +112,21 @@ export class Guard extends EventEmitter {
     this._enterSuspicious(x, y);
   }
 
-  /** Puts the guard on full alert heading for a point it was told about (backup call, fight noise). */
+  /**
+   * Puts the guard on full alert heading for a point it was told about (backup
+   * call, fight noise, camera). An already-alert guard that has lost sight of
+   * the player takes the fresher position instead.
+   */
   alertTo(x, y) {
-    if (this.dead || this.state === GuardState.ALERT) return;
+    if (this.dead) return;
+    if (this.state === GuardState.ALERT) {
+      if (this.canSeePlayer) return;
+      this.lastKnown = { x, y };
+      this.lostTimer = PURSUIT_INTUITION_TIME;
+      this.repathTimer = REPATH_INTERVAL;
+      this._setDestination(x, y);
+      return;
+    }
     this.state = GuardState.ALERT;
     this.meter = 1;
     this.lastKnown = { x, y };

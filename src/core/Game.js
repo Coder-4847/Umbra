@@ -45,6 +45,7 @@ export class Game {
     for (const callback of this.updateCallbacks) {
       callback(deltaSeconds);
     }
+    this.input.endFrame();
   }
 
   _onResize() {

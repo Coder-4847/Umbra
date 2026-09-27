@@ -1,4 +1,4 @@
-import { Container, Graphics, Text } from 'pixi.js';
+import { Container, EventEmitter, Graphics, Text } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
 import { findPath } from '../world/pathfinding.js';
@@ -18,6 +18,8 @@ const ALERT_TURN_SPEED = 8;
 const VISION_RANGE = 230;
 const VISION_FOV = (70 * Math.PI) / 180;
 const ALERT_RANGE_MULT = 1.3;
+// A player who slipped into cover unseen is only spotted at point-blank range.
+const HIDDEN_DETECT_RANGE = 44;
 const CONE_RAYS = 48;
 
 // Seconds for the detection meter to fill from empty at point-blank vs. max range.
@@ -27,6 +29,7 @@ const SUSPICIOUS_THRESHOLD = 0.3;
 const SUSPICIOUS_DETECT_MULT = 1.6;
 const METER_DECAY = 0.3;
 const METER_AFTER_LOSING_TARGET = 0.6;
+const METER_ON_BODY_FOUND = 0.7;
 
 const SEARCH_DURATION = 3.5;
 const LOSE_TARGET_TIME = 4;
@@ -35,24 +38,32 @@ const LOSE_TARGET_TIME = 4;
 const PURSUIT_INTUITION_TIME = 0.6;
 const REPATH_INTERVAL = 0.3;
 const ARRIVE_DIST = 4;
-const CATCH_DIST = 26;
+
+const SHOOT_RANGE = 220;
+const STANDOFF_DIST = 110;
+const AIM_TIME = 0.6;
+const FIRE_COOLDOWN = 0.9;
+const AIM_TOLERANCE = (12 * Math.PI) / 180;
 
 const CONE_COLORS = { patrol: 0xfff3b0, suspicious: 0xffa53d, alert: 0xff4545 };
 const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
 
 /**
- * Guard AI: patrol -> suspicious (investigate last-known position, look around)
- * -> alert (chase with pathfinding). Vision is a cone clipped by walls via
- * grid raycasts; sightings fill a detection meter whose rate scales with
- * proximity.
+ * Guard AI: patrol -> suspicious (investigate a point, look around) -> alert
+ * (A*-pathed chase, aim and fire). Vision is a cone clipped by walls via grid
+ * raycasts; sightings fill a detection meter whose rate scales with proximity.
  *
  * `patrol` is a list of world-space waypoints { x, y, wait?, look? } where
  * `look` is a facing angle (radians) held while waiting. A single waypoint
  * makes a stationary guard; repeating a point with different `look`s makes a
  * guard that stands still and turns. `route` is 'loop' or 'pingpong'.
+ *
+ * Events: 'alert' (guard) when it first actually sees the player during an alert,
+ * 'shoot' (guard) when it fires, 'bodyFound' (guard, body).
  */
-export class Guard {
+export class Guard extends EventEmitter {
   constructor({ tilemap, patrol, route = 'loop' }) {
+    super();
     this.tilemap = tilemap;
     this.patrol = patrol.length === 1 ? [{ ...patrol[0], wait: Infinity }] : patrol;
     this.route = route;
@@ -61,6 +72,7 @@ export class Guard {
     this.y = patrol[0].y;
     this.halfSize = HALF_SIZE;
     this.facing = this._initialFacing();
+    this.dead = false;
 
     this.state = GuardState.PATROL;
     this.meter = 0;
@@ -78,6 +90,10 @@ export class Guard {
     this.searchBaseAngle = 0;
     this.lostTimer = 0;
     this.repathTimer = 0;
+    this.aimTimer = 0;
+    this.fireCooldown = 0;
+    this.aimTarget = null;
+    this.confirmedSighting = false;
 
     this.coneView = new Graphics();
     this.view = this._buildView();
@@ -89,15 +105,44 @@ export class Guard {
     return this.state === GuardState.ALERT ? VISION_RANGE * ALERT_RANGE_MULT : VISION_RANGE;
   }
 
-  /** Sends the guard to investigate a point, e.g. a noise. Ignored while alert. */
+  /** Sends the guard to check out a point. Ignored while alert. */
   investigate(x, y) {
-    if (this.state === GuardState.ALERT) return;
+    if (this.dead || this.state === GuardState.ALERT) return;
     this._enterSuspicious(x, y);
   }
 
-  update(dt, player) {
+  /** Puts the guard on full alert heading for a point it was told about (backup call, fight noise). */
+  alertTo(x, y) {
+    if (this.dead || this.state === GuardState.ALERT) return;
+    this.state = GuardState.ALERT;
+    this.meter = 1;
+    this.lastKnown = { x, y };
+    this.confirmedSighting = false;
+    // They were told where to go, not where the player is: skip pursuit intuition.
+    this.lostTimer = PURSUIT_INTUITION_TIME;
+    this.repathTimer = REPATH_INTERVAL;
+    this.aimTimer = 0;
+    this._setDestination(x, y);
+  }
+
+  hearNoise(x, y, alarming) {
+    if (alarming) this.alertTo(x, y);
+    else this.investigate(x, y);
+  }
+
+  kill() {
+    this.dead = true;
+  }
+
+  /** @param ctx {{ player, bodies }} */
+  update(dt, ctx) {
+    if (this.dead) return;
+    const { player } = ctx;
     const sawPlayer = this.canSeePlayer;
-    this.canSeePlayer = this._canSee(player);
+    this.canSeePlayer = this._canSeePlayer(player, sawPlayer);
+    this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+
+    if (this.state !== GuardState.ALERT) this._checkBodies(ctx.bodies);
 
     switch (this.state) {
       case GuardState.PATROL:
@@ -116,13 +161,32 @@ export class Guard {
 
   // --- perception -----------------------------------------------------------
 
-  _canSee(player) {
-    const dx = player.x - this.x;
-    const dy = player.y - this.y;
-    this.playerDist = Math.hypot(dx, dy);
-    if (this.playerDist > this.visionRange + player.halfSize) return false;
+  _canSeePlayer(player, sawLastFrame) {
+    this.playerDist = Math.hypot(player.x - this.x, player.y - this.y);
+    if (player.dead) return false;
+    // Cover only works if you slip into it unseen; a guard already watching keeps tracking you.
+    const range = player.isHidden && !sawLastFrame ? HIDDEN_DETECT_RANGE : this.visionRange;
+    return this._canSeePoint(player.x, player.y, range + player.halfSize);
+  }
+
+  _canSeePoint(x, y, range) {
+    const dx = x - this.x;
+    const dy = y - this.y;
+    if (dx * dx + dy * dy > range * range) return false;
     if (Math.abs(angleDiff(Math.atan2(dy, dx), this.facing)) > VISION_FOV / 2) return false;
-    return hasLineOfSight(this.tilemap, this.x, this.y, player.x, player.y);
+    return hasLineOfSight(this.tilemap, this.x, this.y, x, y);
+  }
+
+  _checkBodies(bodies) {
+    for (const body of bodies) {
+      if (body.discovered || body.concealed) continue;
+      if (!this._canSeePoint(body.x, body.y, this.visionRange)) continue;
+      body.discovered = true;
+      this._enterSuspicious(body.x, body.y);
+      this.meter = Math.max(this.meter, METER_ON_BODY_FOUND);
+      this.emit('bodyFound', this, body);
+      return;
+    }
   }
 
   _raiseMeter(dt, multiplier) {
@@ -235,17 +299,26 @@ export class Guard {
     if (this.searchTimer <= 0) this._enterPatrol();
   }
 
+  /** Entered by personally spotting the player; calls for backup. */
   _enterAlert() {
     this.state = GuardState.ALERT;
     this.meter = 1;
     this.lostTimer = 0;
     this.repathTimer = 0;
+    this.aimTimer = 0;
+    this.confirmedSighting = true;
+    this.emit('alert', this);
   }
 
   _updateAlert(dt, player, sawPlayerLastFrame) {
     this.repathTimer -= dt;
 
     if (this.canSeePlayer) {
+      // A guard alerted second-hand (noise, radio) calls it in once it actually sees the player.
+      if (!this.confirmedSighting) {
+        this.confirmedSighting = true;
+        this.emit('alert', this);
+      }
       this.lostTimer = 0;
       this.lastKnown = { x: player.x, y: player.y };
       if (this.repathTimer <= 0) {
@@ -253,10 +326,13 @@ export class Guard {
         this.repathTimer = REPATH_INTERVAL;
       }
       this._faceToward(player.x, player.y, dt, ALERT_TURN_SPEED);
-      if (this.playerDist > CATCH_DIST) this._followPath(dt, SPEED.alert, false);
+      this._updateAim(dt, player);
+      if (this.playerDist > STANDOFF_DIST) this._followPath(dt, SPEED.alert, false);
       return;
     }
 
+    this.aimTimer = 0;
+    this.aimTarget = null;
     this.lostTimer += dt;
     if (this.lostTimer < PURSUIT_INTUITION_TIME) {
       this.lastKnown = { x: player.x, y: player.y };
@@ -270,6 +346,23 @@ export class Guard {
     if ((arrived && this.lostTimer >= PURSUIT_INTUITION_TIME) || this.lostTimer > LOSE_TARGET_TIME) {
       this._enterSuspicious(this.lastKnown.x, this.lastKnown.y);
       this.meter = METER_AFTER_LOSING_TARGET;
+    }
+  }
+
+  _updateAim(dt, player) {
+    if (this.playerDist > SHOOT_RANGE || this.fireCooldown > 0) {
+      this.aimTimer = 0;
+      this.aimTarget = null;
+      return;
+    }
+    this.aimTarget = player;
+    this.aimTimer += dt;
+    const onTarget = Math.abs(angleDiff(Math.atan2(player.y - this.y, player.x - this.x), this.facing)) <= AIM_TOLERANCE;
+    if (this.aimTimer >= AIM_TIME && onTarget) {
+      this.emit('shoot', this);
+      this.aimTimer = 0;
+      this.aimTarget = null;
+      this.fireCooldown = FIRE_COOLDOWN;
     }
   }
 
@@ -410,5 +503,14 @@ export class Guard {
 
     this.coneView.clear();
     this.coneView.poly(points).fill({ color: this._coneColor(), alpha: CONE_ALPHA[this.state] });
+
+    // Aim telegraph: a laser line that brightens as the shot winds up.
+    if (this.aimTarget) {
+      const progress = clamp(this.aimTimer / AIM_TIME, 0, 1);
+      this.coneView
+        .moveTo(this.x, this.y)
+        .lineTo(this.aimTarget.x, this.aimTarget.y)
+        .stroke({ width: 1 + progress * 1.5, color: CONE_COLORS.alert, alpha: 0.25 + progress * 0.65 });
+    }
   }
 }

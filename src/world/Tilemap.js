@@ -2,6 +2,10 @@ import { Graphics } from 'pixi.js';
 
 export const TILE_SIZE = 32;
 
+export function tileCenter(tx, ty) {
+  return { x: (tx + 0.5) * TILE_SIZE, y: (ty + 0.5) * TILE_SIZE };
+}
+
 const FLOOR_A = 0x1b1b24;
 const FLOOR_B = 0x1f1f2a;
 const WALL = 0x33323f;

@@ -1,14 +1,10 @@
 import { Graphics } from 'pixi.js';
-import { TILE_SIZE } from '../world/Tilemap.js';
+import { moveAndCollide } from '../world/collision.js';
 
 const HALF_SIZE = 10;
 const SPEED = 180;
 
-/**
- * 8-directional player entity with axis-separated AABB collision against
- * the tilemap, resolved one axis at a time so it slides along walls
- * instead of stopping dead on diagonal contact.
- */
+/** 8-directional player entity with sliding tile collision. */
 export class Player {
   constructor(x, y) {
     this.x = x;
@@ -33,44 +29,14 @@ export class Player {
       this.facing = Math.atan2(moveVector.y, moveVector.x);
     }
 
-    this.x += moveVector.x * this.speed * deltaSeconds;
-    this._resolveAxis('x', tilemap);
-
-    this.y += moveVector.y * this.speed * deltaSeconds;
-    this._resolveAxis('y', tilemap);
+    moveAndCollide(
+      this,
+      moveVector.x * this.speed * deltaSeconds,
+      moveVector.y * this.speed * deltaSeconds,
+      tilemap,
+    );
 
     this._syncView();
-  }
-
-  _resolveAxis(axis, tilemap) {
-    const half = this.halfSize;
-    const minTileX = Math.floor((this.x - half) / TILE_SIZE);
-    const maxTileX = Math.floor((this.x + half) / TILE_SIZE);
-    const minTileY = Math.floor((this.y - half) / TILE_SIZE);
-    const maxTileY = Math.floor((this.y + half) / TILE_SIZE);
-
-    for (let ty = minTileY; ty <= maxTileY; ty++) {
-      for (let tx = minTileX; tx <= maxTileX; tx++) {
-        if (!tilemap.isSolid(tx, ty)) continue;
-
-        const tileLeft = tx * TILE_SIZE;
-        const tileRight = tileLeft + TILE_SIZE;
-        const tileTop = ty * TILE_SIZE;
-        const tileBottom = tileTop + TILE_SIZE;
-
-        const overlapX = Math.min(this.x + half, tileRight) - Math.max(this.x - half, tileLeft);
-        const overlapY = Math.min(this.y + half, tileBottom) - Math.max(this.y - half, tileTop);
-        if (overlapX <= 0 || overlapY <= 0) continue;
-
-        if (axis === 'x') {
-          const tileCenterX = tileLeft + TILE_SIZE / 2;
-          this.x += this.x < tileCenterX ? -overlapX : overlapX;
-        } else {
-          const tileCenterY = tileTop + TILE_SIZE / 2;
-          this.y += this.y < tileCenterY ? -overlapY : overlapY;
-        }
-      }
-    }
   }
 
   _syncView() {

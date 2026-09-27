@@ -1,4 +1,4 @@
-import { TILE_SIZE } from './Tilemap.js';
+import { TILE_SIZE } from './tiles.js';
 import { isBoxClear } from './collision.js';
 
 const SQRT2 = Math.SQRT2;

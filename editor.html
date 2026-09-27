@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>UMBRA Level Editor</title>
+  </head>
+  <body>
+    <div id="editor">
+      <header id="topbar">
+        <span class="brand">UMBRA <em>editor</em></span>
+        <button data-action="new" title="New level">New</button>
+        <select id="open-select" title="Open a level or start from a template">
+          <option value="">Open…</option>
+        </select>
+        <button data-action="save" title="Save to src/levels/data (Ctrl+S)">Save</button>
+        <button data-action="save-as">Save as…</button>
+        <button data-action="save-template" title="Save to src/levels/templates">Save as template</button>
+        <span class="sep"></span>
+        <button data-action="import">Import</button>
+        <button data-action="export">Export</button>
+        <span class="sep"></span>
+        <button data-action="undo" title="Ctrl+Z">Undo</button>
+        <button data-action="redo" title="Ctrl+Y / Ctrl+Shift+Z">Redo</button>
+        <span class="spacer"></span>
+        <span id="doc-label"></span>
+        <button data-action="playtest" class="primary" title="Ctrl+Enter">▶ Playtest</button>
+        <input id="import-file" type="file" accept=".json,application/json" hidden />
+      </header>
+      <nav id="tools"></nav>
+      <main id="viewport">
+        <canvas id="canvas"></canvas>
+        <div id="status"></div>
+        <div id="toast"></div>
+      </main>
+      <aside id="panel"></aside>
+    </div>
+    <script type="module" src="/src/editor/editor.js"></script>
+  </body>
+</html>

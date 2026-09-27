@@ -1,5 +1,6 @@
-import { Container, EventEmitter } from 'pixi.js';
+import { Container, EventEmitter, Graphics } from 'pixi.js';
 import { Tilemap } from '../world/Tilemap.js';
+import { TILE_SIZE } from '../world/tiles.js';
 import { Effects } from '../world/Effects.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { moveAndCollide } from '../world/collision.js';
@@ -21,6 +22,7 @@ const LOUD_KILL_NOISE_RADIUS = 320;
 // Walls muffle sound: guards without line of sight to a noise hear it at reduced range.
 const MUFFLED_NOISE_FACTOR = 0.6;
 const BACKUP_RADIUS = 360;
+const PICKUP_RANGE = 22;
 
 const COLOR = {
   noise: 0xdcdcf0,
@@ -28,55 +30,176 @@ const COLOR = {
   body: 0xffa53d,
   silent: 0xffffff,
   tracer: 0xffd27a,
+  exit: 0x4ade80,
+  exitLocked: 0x3a5a46,
+  intel: 0xffd166,
+};
+
+const OBJECTIVE_LABELS = {
+  eliminateAll: 'Eliminate all guards',
+  eliminateTargets: 'Eliminate the targets',
+  collect: 'Collect the intel',
+  exit: 'Reach the exit',
 };
 
 /**
- * One playable level: owns the map, player, guards, bodies and effects, and
- * applies the rules that connect them (takedowns, noise, backup calls, damage).
+ * One playable level, built from parsed level data (see levels/schema.js):
+ * owns the map, player, guards, bodies and effects, and applies the rules that
+ * connect them (takedowns, noise, backup calls, damage, objectives).
  *
- * Events: 'failed' when the player dies.
+ * Events: 'failed' (stats) when the player dies, 'completed' (stats) when all
+ * objectives are done.
  */
 export class Level extends EventEmitter {
-  constructor(config) {
+  constructor(data) {
     super();
-    this.tilemap = new Tilemap();
+    this.data = data;
+    this.tilemap = new Tilemap(data.cols, data.rows, data.grid);
     this.effects = new Effects();
+    this.markers = new Graphics();
 
     this.root = new Container();
     this.bodyLayer = new Container();
     this.coneLayer = new Container();
     this.entityLayer = new Container();
-    this.root.addChild(this.tilemap.view, this.bodyLayer, this.coneLayer, this.entityLayer, this.effects.view);
+    this.root.addChild(
+      this.tilemap.view,
+      this.markers,
+      this.bodyLayer,
+      this.coneLayer,
+      this.entityLayer,
+      this.effects.view,
+    );
 
-    this.player = new Player(config.spawn.x, config.spawn.y);
-    this.guards = config.guards.map((guardConfig) => this._addGuard(guardConfig));
+    this.player = new Player(data.spawn.x, data.spawn.y);
+    this.guards = data.guards.map((guardConfig) => this._addGuard(guardConfig));
     this.entityLayer.addChild(this.player.view);
     this.bodies = [];
 
+    this.objectives = data.objectives;
+    this.exits = data.exits;
+    this.intel = data.intel.map((item) => ({ ...item, collected: false }));
+    this.totalGuards = this.guards.length;
+    this.totalTargets = this.guards.filter((g) => g.target).length;
+    this.exitUnlocked = false;
+
     this.stats = { elapsed: 0, kills: 0, stealthKills: 0, detections: 0, bodiesDiscovered: 0 };
     this.failed = false;
+    this.completed = false;
+    this.time = 0;
     this.stepTimer = 0;
+  }
+
+  get finished() {
+    return this.failed || this.completed;
   }
 
   update(dt, input) {
     const { player } = this;
-    if (!this.failed) {
+    this.time += dt;
+
+    if (!this.finished) {
       this.stats.elapsed += dt;
       this._updatePlayer(dt, input);
+      this._updateObjectives();
     } else {
       player.update(dt, { x: 0, y: 0 }, 0, this.tilemap);
     }
 
-    const ctx = { player, bodies: this.bodies };
-    for (const guard of this.guards) guard.update(dt, ctx);
-    this._separateGuards();
+    // Freeze the guards once the level is won so nothing can change the final stats.
+    if (!this.completed) {
+      const ctx = { player, bodies: this.bodies };
+      for (const guard of this.guards) guard.update(dt, ctx);
+      this._separateGuards();
+    }
 
     for (const body of this.bodies) {
       if (body.carried) this._followCarrier(body, dt);
       body.update(this.tilemap);
     }
 
+    this._drawMarkers();
     this.effects.update(dt);
+  }
+
+  // --- objectives --------------------------------------------------------------
+
+  /** Per-objective progress for the HUD. */
+  objectiveStatus() {
+    return this.objectives.map((id) => {
+      const status = { id, label: OBJECTIVE_LABELS[id], done: false, current: 0, total: 0, locked: false };
+      switch (id) {
+        case 'eliminateAll':
+          status.total = this.totalGuards;
+          status.current = this.totalGuards - this.guards.length;
+          status.done = this.guards.length === 0;
+          break;
+        case 'eliminateTargets': {
+          const remaining = this.guards.filter((g) => g.target).length;
+          status.total = this.totalTargets;
+          status.current = this.totalTargets - remaining;
+          status.done = remaining === 0;
+          break;
+        }
+        case 'collect':
+          status.total = this.intel.length;
+          status.current = this.intel.filter((item) => item.collected).length;
+          status.done = status.current === status.total;
+          break;
+        case 'exit':
+          status.locked = !this.exitUnlocked;
+          status.done = this.completed;
+          break;
+      }
+      return status;
+    });
+  }
+
+  _updateObjectives() {
+    const { player } = this;
+    for (const item of this.intel) {
+      if (item.collected || Math.hypot(item.x - player.x, item.y - player.y) > PICKUP_RANGE) continue;
+      item.collected = true;
+      this.effects.burst(item.x, item.y, COLOR.intel);
+    }
+
+    const othersDone = this.objectiveStatus().every((s) => s.id === 'exit' || s.done);
+    if (!othersDone) return;
+
+    if (!this.objectives.includes('exit')) {
+      this._complete();
+      return;
+    }
+    this.exitUnlocked = true;
+    const tx = Math.floor(player.x / TILE_SIZE);
+    const ty = Math.floor(player.y / TILE_SIZE);
+    const onExit = this.exits.some((e) => e.tx === tx && e.ty === ty);
+    if (onExit) this._complete();
+  }
+
+  _complete() {
+    this.completed = true;
+    if (this.player.dragging) this._drop();
+    this.emit('completed', this.stats);
+  }
+
+  _drawMarkers() {
+    const g = this.markers;
+    g.clear();
+    if (this.objectives.includes('exit')) {
+      const pulse = 0.5 + 0.5 * Math.sin(this.time * 3);
+      for (const exit of this.exits) {
+        const color = this.exitUnlocked ? COLOR.exit : COLOR.exitLocked;
+        g.rect(exit.x - 16, exit.y - 16, 32, 32)
+          .fill({ color, alpha: this.exitUnlocked ? 0.2 + 0.25 * pulse : 0.2 })
+          .stroke({ width: 2, color, alpha: this.exitUnlocked ? 0.9 : 0.5 });
+      }
+    }
+    for (const item of this.intel) {
+      if (item.collected) continue;
+      const y = item.y + Math.sin(this.time * 3 + item.x) * 2;
+      g.poly([item.x, y - 8, item.x + 6, y, item.x, y + 8, item.x - 6, y]).fill(COLOR.intel);
+    }
   }
 
   // --- player ----------------------------------------------------------------

@@ -7,6 +7,7 @@ const DEFAULT_BINDINGS = {
   attack: ['Space', 'Mouse0'],
   interact: ['KeyE'],
   restart: ['KeyR'],
+  confirm: ['Enter', 'NumpadEnter'],
 };
 
 /**

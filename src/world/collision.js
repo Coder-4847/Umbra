@@ -1,4 +1,4 @@
-import { TILE_SIZE } from './Tilemap.js';
+import { TILE_SIZE } from './tiles.js';
 
 /**
  * Moves an axis-aligned box ({x, y, halfSize}) and resolves tile collisions one

@@ -42,17 +42,47 @@ canvas {
   opacity: 1;
 }
 
+.overlay.clear {
+  background: radial-gradient(ellipse at center, rgba(8, 40, 22, 0.5), rgba(5, 5, 8, 0.8));
+}
+
 .overlay-title {
   font-size: clamp(40px, 8vw, 72px);
   font-weight: 900;
   letter-spacing: 0.3em;
+  padding-left: 0.3em;
   color: #ff4545;
   text-shadow: 0 0 24px rgba(255, 69, 69, 0.45);
 }
 
+.overlay.clear .overlay-title {
+  color: #4ade80;
+  text-shadow: 0 0 24px rgba(74, 222, 128, 0.45);
+}
+
 .overlay-hint {
+  max-width: min(90vw, 720px);
   font-size: 14px;
   letter-spacing: 0.2em;
+  text-align: center;
   text-transform: uppercase;
+  white-space: pre-line;
   opacity: 0.7;
+}
+
+.hud {
+  position: fixed;
+  top: 16px;
+  left: 16px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: rgba(11, 11, 16, 0.6);
+  color: #d8d8e4;
+  font: 13px/1.6 system-ui, sans-serif;
+  white-space: pre-line;
+  pointer-events: none;
+}
+
+.hud:empty {
+  display: none;
 }

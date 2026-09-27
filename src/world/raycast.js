@@ -1,4 +1,4 @@
-import { TILE_SIZE } from './Tilemap.js';
+import { TILE_SIZE } from './tiles.js';
 
 /**
  * Grid raycast (Amanatides & Woo DDA). Walks the exact sequence of tiles the

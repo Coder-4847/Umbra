@@ -3,6 +3,7 @@ import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
 import { findPath } from '../world/pathfinding.js';
 import { angleDiff, clamp, lerpColor, turnToward } from '../core/math.js';
+import { VISION_FOV, VISION_RANGE } from './guardVision.js';
 
 export const GuardState = Object.freeze({
   PATROL: 'patrol',
@@ -15,8 +16,6 @@ const SPEED = { patrol: 70, suspicious: 95, alert: 150 };
 const TURN_SPEED = 4.5;
 const ALERT_TURN_SPEED = 8;
 
-const VISION_RANGE = 230;
-const VISION_FOV = (70 * Math.PI) / 180;
 const ALERT_RANGE_MULT = 1.3;
 // A player who slipped into cover unseen is only spotted at point-blank range.
 const HIDDEN_DETECT_RANGE = 44;
@@ -57,16 +56,18 @@ const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
  * `look` is a facing angle (radians) held while waiting. A single waypoint
  * makes a stationary guard; repeating a point with different `look`s makes a
  * guard that stands still and turns. `route` is 'loop' or 'pingpong'.
+ * `target` marks a guard for the eliminate-targets objective.
  *
  * Events: 'alert' (guard) when it first actually sees the player during an alert,
  * 'shoot' (guard) when it fires, 'bodyFound' (guard, body).
  */
 export class Guard extends EventEmitter {
-  constructor({ tilemap, patrol, route = 'loop' }) {
+  constructor({ tilemap, patrol, route = 'loop', target = false }) {
     super();
     this.tilemap = tilemap;
     this.patrol = patrol.length === 1 ? [{ ...patrol[0], wait: Infinity }] : patrol;
     this.route = route;
+    this.target = target;
 
     this.x = patrol[0].x;
     this.y = patrol[0].y;
@@ -420,8 +421,9 @@ export class Guard extends EventEmitter {
     const view = new Container();
 
     this.body = new Graphics();
-    this.body.circle(0, 0, HALF_SIZE).fill(0x5b8def);
+    this.body.circle(0, 0, HALF_SIZE).fill(this.target ? 0xd9534f : 0x5b8def);
     this.body.poly([HALF_SIZE + 6, 0, HALF_SIZE - 4, -5, HALF_SIZE - 4, 5]).fill(0xdbe7ff);
+    if (this.target) this.body.circle(0, 0, HALF_SIZE + 4).stroke({ width: 2, color: 0xff8a80, alpha: 0.9 });
 
     this.meterBar = new Graphics();
 

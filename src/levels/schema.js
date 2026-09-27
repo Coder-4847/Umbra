@@ -1,0 +1,276 @@
+/**
+ * UMBRA level file format, version 1. One file per level: src/levels/data/<id>.json
+ * (campaign ids are "CC-LL", e.g. "03-10" = chapter 3 boss). Templates live in
+ * src/levels/templates/ and use the same format.
+ *
+ * {
+ *   "version": 1,
+ *   "id": "01-03",
+ *   "name": "Night Shift",
+ *   "chapter": 1,
+ *   "targetTime": 75,                               // seconds, for the 3-star rating
+ *   "objectives": ["eliminateTargets", "exit"],
+ *   "tiles": ["#######", "#P..%E#", "#######"],     // one string per row, see LEGEND
+ *   "guards": [
+ *     { "route": "pingpong", "target": true,
+ *       "patrol": [{ "x": 2, "y": 1, "wait": 1.5, "look": "S" }, [4, 1]] }
+ *   ]
+ * }
+ *
+ * Waypoints are tile coordinates, as { x, y, wait?, look? } or [x, y, wait?, look?].
+ * `look` is a compass direction (N, NE, E, ...) or degrees clockwise from east,
+ * held while waiting. route is "loop" (default) or "pingpong".
+ * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
+ * exit tile; always evaluated last, after the others are complete).
+ */
+import { GridMap, Tile, tileCenter } from '../world/tiles.js';
+import { findPath } from '../world/pathfinding.js';
+import { hasLineOfSight } from '../world/raycast.js';
+import { angleDiff } from '../core/math.js';
+import { VISION_FOV, VISION_RANGE } from '../entities/guardVision.js';
+
+export const FORMAT_VERSION = 1;
+
+export const LEGEND = Object.freeze({
+  '#': { tile: Tile.WALL, label: 'Wall' },
+  '.': { tile: Tile.FLOOR, label: 'Floor' },
+  '%': { tile: Tile.BUSH, label: 'Bush' },
+  ':': { tile: Tile.SHADOW, label: 'Shadow' },
+  P: { tile: Tile.FLOOR, marker: 'spawn', label: 'Player spawn' },
+  E: { tile: Tile.FLOOR, marker: 'exit', label: 'Exit' },
+  i: { tile: Tile.FLOOR, marker: 'intel', label: 'Intel' },
+});
+
+export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'collect', 'exit']);
+
+export const COMPASS = Object.freeze({ E: 0, SE: 45, S: 90, SW: 135, W: 180, NW: 225, N: 270, NE: 315 });
+
+const ROUTES = ['loop', 'pingpong'];
+const BODY_HALF_SIZE = 10;
+const DEFAULT_TARGET_TIME = 90;
+const MIN_SIZE = 5;
+const MAX_SIZE = 200;
+
+export class LevelError extends Error {
+  constructor(id, errors) {
+    super(`Level "${id ?? '?'}" is invalid:\n- ${errors.join('\n- ')}`);
+    this.errors = errors;
+  }
+}
+
+/** Parses level JSON into runtime data (world-space positions, radians). Throws LevelError. */
+export function parseLevel(json) {
+  const errors = [];
+  const level = readLevel(json, errors);
+  if (errors.length) throw new LevelError(json?.id, errors);
+  return level;
+}
+
+/**
+ * Full authoring check: format errors plus playability problems (unreachable
+ * exits, broken patrol legs, a guard watching the spawn). Never throws.
+ */
+export function validateLevel(json) {
+  const errors = [];
+  const warnings = [];
+  const level = readLevel(json, errors);
+  if (level && errors.length === 0) checkPlayability(level, errors, warnings);
+  return { errors, warnings, level: errors.length === 0 ? level : null };
+}
+
+function readLevel(json, errors) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) {
+    errors.push('Level must be a JSON object');
+    return null;
+  }
+  if (json.version !== FORMAT_VERSION) errors.push(`"version" must be ${FORMAT_VERSION}`);
+  if (typeof json.id !== 'string' || json.id === '') errors.push('"id" must be a non-empty string');
+
+  const targetTime = json.targetTime ?? DEFAULT_TARGET_TIME;
+  if (typeof targetTime !== 'number' || targetTime <= 0) errors.push('"targetTime" must be a positive number of seconds');
+  const chapter = json.chapter ?? 0;
+  if (!Number.isInteger(chapter) || chapter < 0) errors.push('"chapter" must be a whole number');
+
+  const tiles = readTiles(json.tiles, errors);
+  if (!tiles) return null;
+  const map = new GridMap(tiles.cols, tiles.rows, tiles.grid);
+  const guards = readGuards(json.guards ?? [], map, errors);
+  const objectives = readObjectives(json.objectives, tiles, guards, errors);
+
+  return {
+    id: json.id,
+    name: typeof json.name === 'string' && json.name ? json.name : json.id,
+    chapter,
+    targetTime,
+    objectives,
+    ...tiles,
+    guards,
+  };
+}
+
+function readTiles(tiles, errors) {
+  if (!Array.isArray(tiles) || tiles.length === 0 || !tiles.every((row) => typeof row === 'string')) {
+    errors.push('"tiles" must be a non-empty array of strings');
+    return null;
+  }
+  const rows = tiles.length;
+  const cols = tiles[0].length;
+  if (rows < MIN_SIZE || cols < MIN_SIZE || rows > MAX_SIZE || cols > MAX_SIZE) {
+    errors.push(`Map must be between ${MIN_SIZE} and ${MAX_SIZE} tiles on each side (is ${cols}x${rows})`);
+    return null;
+  }
+
+  const grid = [];
+  const spawns = [];
+  const exits = [];
+  const intel = [];
+  let malformed = false;
+
+  for (let y = 0; y < rows; y++) {
+    const row = tiles[y];
+    if (row.length !== cols) {
+      errors.push(`Tile row ${y} has ${row.length} columns, expected ${cols}`);
+      malformed = true;
+      continue;
+    }
+    const gridRow = [];
+    for (let x = 0; x < cols; x++) {
+      const entry = LEGEND[row[x]];
+      if (!entry) {
+        errors.push(`Unknown tile "${row[x]}" at (${x},${y})`);
+        gridRow.push(Tile.WALL);
+        continue;
+      }
+      gridRow.push(entry.tile);
+      const point = { tx: x, ty: y, ...tileCenter(x, y) };
+      if (entry.marker === 'spawn') spawns.push(point);
+      else if (entry.marker === 'exit') exits.push(point);
+      else if (entry.marker === 'intel') intel.push(point);
+    }
+    grid.push(gridRow);
+  }
+
+  if (malformed) return null;
+  if (spawns.length !== 1) errors.push(`Exactly one player spawn "P" is required (found ${spawns.length})`);
+  return { cols, rows, grid, spawn: spawns[0] ?? null, exits, intel };
+}
+
+function readGuards(list, map, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"guards" must be an array');
+    return [];
+  }
+  const guards = [];
+  list.forEach((guard, gi) => {
+    const label = `Guard ${gi + 1}`;
+    if (!guard || typeof guard !== 'object') {
+      errors.push(`${label} must be an object`);
+      return;
+    }
+    const route = guard.route ?? 'loop';
+    if (!ROUTES.includes(route)) errors.push(`${label}: route must be "loop" or "pingpong"`);
+    if (!Array.isArray(guard.patrol) || guard.patrol.length === 0) {
+      errors.push(`${label}: needs at least one patrol waypoint`);
+      return;
+    }
+    const patrol = guard.patrol.map((wp, wi) => readWaypoint(wp, `${label} waypoint ${wi + 1}`, map, errors));
+    if (patrol.includes(null)) return;
+    guards.push({ route, target: guard.target === true, patrol });
+  });
+  return guards;
+}
+
+function readWaypoint(wp, label, map, errors) {
+  const [x, y, wait, look] = Array.isArray(wp) ? wp : [wp?.x, wp?.y, wp?.wait, wp?.look];
+  if (!Number.isInteger(x) || !Number.isInteger(y)) {
+    errors.push(`${label}: x and y must be whole tile coordinates`);
+    return null;
+  }
+  if (map.isSolid(x, y)) errors.push(`${label} at (${x},${y}) is inside a wall or off the map`);
+  if (wait != null && !(typeof wait === 'number' && wait >= 0)) errors.push(`${label}: wait must be seconds >= 0`);
+  return { ...tileCenter(x, y), tx: x, ty: y, wait: wait ?? 0, look: readLook(look, label, errors) };
+}
+
+function readLook(look, label, errors) {
+  if (look == null) return null;
+  let degrees = null;
+  if (typeof look === 'number') degrees = look;
+  else if (typeof look === 'string' && look.toUpperCase() in COMPASS) degrees = COMPASS[look.toUpperCase()];
+  if (degrees === null) {
+    errors.push(`${label}: look must be a compass direction (N, NE, E, ...) or degrees`);
+    return null;
+  }
+  return (degrees * Math.PI) / 180;
+}
+
+function readObjectives(list, tiles, guards, errors) {
+  if (!Array.isArray(list) || list.length === 0) {
+    errors.push('"objectives" must be a non-empty array');
+    return [];
+  }
+  for (const objective of list) {
+    if (!OBJECTIVES.includes(objective)) errors.push(`Unknown objective "${objective}"`);
+  }
+  if (new Set(list).size !== list.length) errors.push('Objectives must not repeat');
+  if (list.includes('exit') && tiles.exits.length === 0) errors.push('The "exit" objective needs at least one exit tile "E"');
+  if (list.includes('collect') && tiles.intel.length === 0) errors.push('The "collect" objective needs at least one intel tile "i"');
+  if (list.includes('eliminateTargets') && !guards.some((g) => g.target)) {
+    errors.push('The "eliminateTargets" objective needs at least one guard with "target": true');
+  }
+  const ordered = list.filter((o) => o !== 'exit');
+  if (list.includes('exit')) ordered.push('exit');
+  return ordered;
+}
+
+function checkPlayability(level, errors, warnings) {
+  const map = new GridMap(level.cols, level.rows, level.grid);
+  const { spawn } = level;
+  const reachable = (p) => findPath(map, spawn.x, spawn.y, p.x, p.y, BODY_HALF_SIZE) !== null;
+
+  for (const exit of level.exits) {
+    if (!reachable(exit)) errors.push(`Exit at (${exit.tx},${exit.ty}) can't be reached from the spawn`);
+  }
+  for (const item of level.intel) {
+    if (!reachable(item)) errors.push(`Intel at (${item.tx},${item.ty}) can't be reached from the spawn`);
+  }
+
+  const mustEliminate = (g) =>
+    level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets'));
+
+  level.guards.forEach((guard, gi) => {
+    const label = `Guard ${gi + 1}`;
+    const { patrol } = guard;
+    if (mustEliminate(guard) && !reachable(patrol[0])) errors.push(`${label} can't be reached, so it can't be eliminated`);
+
+    const legs = guard.route === 'loop' ? patrol.length : patrol.length - 1;
+    for (let i = 0; i < legs && patrol.length > 1; i++) {
+      const a = patrol[i];
+      const b = patrol[(i + 1) % patrol.length];
+      if (a.tx === b.tx && a.ty === b.ty) continue;
+      if (!findPath(map, a.x, a.y, b.x, b.y, BODY_HALF_SIZE)) {
+        warnings.push(`${label}: no walkable path from waypoint ${i + 1} to ${((i + 1) % patrol.length) + 1}`);
+      }
+    }
+
+    const start = patrol[0];
+    const facing = initialFacing(patrol);
+    const dist = Math.hypot(spawn.x - start.x, spawn.y - start.y);
+    const inCone = Math.abs(angleDiff(Math.atan2(spawn.y - start.y, spawn.x - start.x), facing)) <= VISION_FOV / 2;
+    if (dist <= VISION_RANGE && inCone && hasLineOfSight(map, start.x, start.y, spawn.x, spawn.y)) {
+      warnings.push(`${label} can see the player spawn at the start`);
+    }
+  });
+
+  if (level.guards.length === 0) warnings.push('Level has no guards');
+  if (level.exits.length > 0 && !level.objectives.includes('exit')) warnings.push('Exit tiles are placed but "exit" is not an objective');
+  if (level.intel.length > 0 && !level.objectives.includes('collect')) warnings.push('Intel is placed but "collect" is not an objective');
+}
+
+function initialFacing(patrol) {
+  const [first, second] = patrol;
+  if (first.look != null) return first.look;
+  if (second && (second.x !== first.x || second.y !== first.y)) {
+    return Math.atan2(second.y - first.y, second.x - first.x);
+  }
+  return 0;
+}

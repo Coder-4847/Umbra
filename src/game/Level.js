@@ -38,6 +38,14 @@ const LASER_ALARM_RADIUS = 520;
 // A guard who spots the player only runs for a panel within this range.
 const PANEL_RUN_RANGE = 700;
 const HACK_LOCK_TIME = 0.4;
+const ELEVATOR_RIDE = 1.2;
+const ELEVATOR_DING_RADIUS = 220;
+const LINK_REACH = 26;
+const LINK_LOCK_TIME = 0.25;
+const FLOOR_SHADE_ALPHA = 0.62;
+// Radio nets check in this often; a member killed since the last check gets someone sent to look.
+const RADIO_CHECKIN_INTERVAL = 10;
+const RADIO_NOTICE_TIME = 3.5;
 const PICKUP_RANGE = 22;
 
 const COLOR = {
@@ -51,6 +59,8 @@ const COLOR = {
   exitLocked: 0x3a5a46,
   intel: 0xffd166,
   hack: 0x7dd3fc,
+  link: 0xc4b5fd,
+  radio: 0x93c5fd,
 };
 
 const OBJECTIVE_LABELS = {
@@ -66,7 +76,8 @@ const OBJECTIVE_LABELS = {
  * connect them (takedowns, noise, backup calls, damage, objectives).
  *
  * Events: 'failed' (stats) when the player dies, 'completed' (stats) when all
- * objectives are done, 'alarm' when a guard raises a full alarm at a panel.
+ * objectives are done, 'alarm' when a guard raises a full alarm at a panel,
+ * 'transit' when the player arrives by stairs or elevator.
  */
 export class Level extends EventEmitter {
   constructor(data) {
@@ -76,6 +87,15 @@ export class Level extends EventEmitter {
     this.effects = new Effects();
     this.markers = new Graphics();
     this.tracks = new SnowTracks(this.tilemap);
+
+    this.links = data.links;
+    this.tilemap.setLinks(this.links);
+    this.floors = this.tilemap.computeFloors();
+    this.floorOwners = this._computeFloorOwners();
+    this.floorCount = this.floors.reduce((max, f) => Math.max(max, f), -1) + 1;
+    this.linkView = new Graphics();
+    // Other floors are dimmed so a multi-floor level reads as a set of floor plans.
+    this.floorShade = new Graphics();
 
     this.root = new Container();
     this.hazardLayer = new Container();
@@ -88,11 +108,13 @@ export class Level extends EventEmitter {
       this.tilemap.view,
       this.tracks.view,
       this.markers,
+      this.linkView,
       this.hazardLayer,
       this.bodyLayer,
       this.coneLayer,
       this.entityLayer,
       this.cameraLayer,
+      this.floorShade,
       this.effects.view,
     );
 
@@ -121,6 +143,21 @@ export class Level extends EventEmitter {
     this.fullAlarm = false;
     this.alarmRunner = null;
 
+    this.channels = new Map();
+    for (const guard of this.guards) {
+      if (!guard.radio) continue;
+      if (!this.channels.has(guard.radio)) {
+        this.channels.set(guard.radio, { members: new Set(), timer: RADIO_CHECKIN_INTERVAL, missing: [] });
+      }
+      this.channels.get(guard.radio).members.add(guard);
+    }
+    this.radioNotice = { text: '', timer: 0 };
+
+    this.transit = null;
+    this.currentFloor = -1;
+    this._drawLinks();
+    this._syncFloor();
+
     this.objectives = data.objectives;
     this.exits = data.exits;
     this.intel = data.intel.map((item) => ({ ...item, collected: false }));
@@ -137,6 +174,7 @@ export class Level extends EventEmitter {
       wildlifeFlushed: 0,
       lasersTripped: 0,
       fullAlarms: 0,
+      radioChecksFailed: 0,
     };
     this.failed = false;
     this.completed = false;
@@ -154,10 +192,14 @@ export class Level extends EventEmitter {
 
     if (!this.finished) {
       this.stats.elapsed += dt;
+      this._updateTransit(dt);
       this._updatePlayer(dt, input);
-      this._checkWildlifeProximity();
-      this._checkLasers();
-      this._updateObjectives();
+      if (!player.inTransit) {
+        this._checkWildlifeProximity();
+        this._checkLasers();
+        this._updateObjectives();
+      }
+      this._syncFloor();
     } else {
       player.update(dt, { x: 0, y: 0 }, 0, this.tilemap);
     }
@@ -169,7 +211,9 @@ export class Level extends EventEmitter {
       for (const camera of this.cameras) camera.update(dt, ctx);
       this._separateGuards();
       this._syncAlarmRunner();
+      if (!this.failed) this._updateRadios(dt);
     }
+    this.radioNotice.timer = Math.max(0, this.radioNotice.timer - dt);
 
     for (const body of this.bodies) {
       if (body.carried) this._followCarrier(body, dt);
@@ -268,6 +312,10 @@ export class Level extends EventEmitter {
 
   _updatePlayer(dt, input) {
     const { player } = this;
+    if (player.inTransit) {
+      player.update(dt, { x: 0, y: 0 }, 0, this.tilemap);
+      return;
+    }
 
     if (input.wasActionPressed('attack')) this._tryTakedown();
     if (input.wasActionPressed('interact')) this._interact();
@@ -324,9 +372,17 @@ export class Level extends EventEmitter {
     if (!silent) this.emitNoise(target.x, target.y, LOUD_KILL_NOISE_RADIUS, true);
   }
 
-  /** E: drop a carried body, else hack a panel in reach, else grab a nearby body. */
+  /**
+   * E: take stairs/elevator you're standing at (bringing a carried body along),
+   * else drop a carried body, else hack a panel in reach, else grab a nearby body.
+   */
   _interact() {
     const { player } = this;
+    const pad = this.linkInReach();
+    if (pad) {
+      this._useLink(pad.link, pad.from);
+      return;
+    }
     if (player.dragging) {
       this._drop();
       return;
@@ -389,6 +445,11 @@ export class Level extends EventEmitter {
 
   _removeGuard(guard) {
     if (guard === this.alarmRunner) this._clearAlarmRunner();
+    const channel = guard.radio ? this.channels.get(guard.radio) : null;
+    if (channel) {
+      channel.members.delete(guard);
+      channel.missing.push({ x: guard.x, y: guard.y });
+    }
     guard.kill();
     guard.removeAllListeners();
     this.guards.splice(this.guards.indexOf(guard), 1);
@@ -396,14 +457,19 @@ export class Level extends EventEmitter {
     guard.coneView.destroy();
   }
 
-  /** Radio call: nearby guards converge on where the caller saw the player. No chain reactions. */
+  /**
+   * A shout brings guards nearby on the same floor; a radio call brings the
+   * caller's whole channel, wherever they are. No chain reactions.
+   */
   _onGuardSpottedPlayer(caller) {
     this.stats.detections++;
     this.effects.ring(caller.x, caller.y, BACKUP_RADIUS, COLOR.alarm, 0.8);
     for (const guard of this.guards) {
       if (guard === caller) continue;
-      if (Math.hypot(guard.x - caller.x, guard.y - caller.y) > BACKUP_RADIUS) continue;
-      guard.alertTo(caller.lastKnown.x, caller.lastKnown.y);
+      const inEarshot =
+        Math.hypot(guard.x - caller.x, guard.y - caller.y) <= BACKUP_RADIUS && this.sameFloor(guard, caller);
+      const onRadio = caller.radio && guard.radio === caller.radio;
+      if (inEarshot || onRadio) guard.alertTo(caller.lastKnown.x, caller.lastKnown.y);
     }
     this._maybeSendAlarmRunner(caller);
   }
@@ -510,8 +576,9 @@ export class Level extends EventEmitter {
     this.effects.ring(finder.x, finder.y, radius, COLOR.body, 0.8);
     for (const guard of this.guards) {
       if (guard === finder) continue;
-      if (Math.hypot(guard.x - finder.x, guard.y - finder.y) > radius) continue;
-      guard.investigate(body.x, body.y);
+      const nearby = Math.hypot(guard.x - finder.x, guard.y - finder.y) <= radius;
+      const onRadio = finder.radio && guard.radio === finder.radio;
+      if (nearby || onRadio) guard.investigate(body.x, body.y);
     }
   }
 
@@ -545,20 +612,213 @@ export class Level extends EventEmitter {
    * flight. A flock's own noise doesn't flush other flocks, so birds can't chain
    * across the whole map.
    */
-  emitNoise(x, y, radius, alarming, { fromWildlife = false } = {}) {
-    const color = fromWildlife ? COLOR.wildlife : alarming ? COLOR.alarm : COLOR.noise;
-    this.effects.ring(x, y, radius, color, alarming ? 0.6 : 0.45);
+  emitNoise(x, y, radius, alarming, { fromWildlife = false, color } = {}) {
+    const ringColor = color ?? (fromWildlife ? COLOR.wildlife : alarming ? COLOR.alarm : COLOR.noise);
+    this.effects.ring(x, y, radius, ringColor, alarming ? 0.6 : 0.45);
+    // Sound stays on its own floor.
+    const floor = this.floorAt(x, y);
     for (const guard of this.guards) {
       const dist = Math.hypot(guard.x - x, guard.y - y);
-      if (dist > radius) continue;
+      if (dist > radius || this.floorAt(guard.x, guard.y) !== floor) continue;
       if (dist > radius * MUFFLED_NOISE_FACTOR && !hasLineOfSight(this.tilemap, x, y, guard.x, guard.y)) continue;
       guard.hearNoise(x, y, alarming);
     }
     if (fromWildlife) return;
     for (const flock of this.wildlife) {
-      if (flock.flushed) continue;
+      if (flock.flushed || this.floorAt(flock.x, flock.y) !== floor) continue;
       if (Math.hypot(flock.x - x, flock.y - y) <= radius * WILDLIFE_HEARING) this._flushBirds(flock);
     }
+  }
+
+  // --- floors, stairs & elevators ------------------------------------------------
+
+  /** Floor id at a world position (walls count as the nearest floor's). */
+  floorAt(x, y) {
+    const { cols, rows } = this.tilemap;
+    const tx = Math.floor(x / TILE_SIZE);
+    const ty = Math.floor(y / TILE_SIZE);
+    if (tx < 0 || ty < 0 || tx >= cols || ty >= rows) return -1;
+    return this.floorOwners[ty * cols + tx];
+  }
+
+  sameFloor(a, b) {
+    return this.floorAt(a.x, a.y) === this.floorAt(b.x, b.y);
+  }
+
+  /** Floor ids spread outward into the walls, so each wall dims with the floor it borders. */
+  _computeFloorOwners() {
+    const { cols, rows } = this.tilemap;
+    const owners = Int32Array.from(this.floors);
+    let frontier = [];
+    for (let i = 0; i < owners.length; i++) if (owners[i] >= 0) frontier.push(i);
+    while (frontier.length) {
+      const next = [];
+      for (const i of frontier) {
+        const x = i % cols;
+        const y = (i - x) / cols;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          const n = ny * cols + nx;
+          if (owners[n] !== -1) continue;
+          owners[n] = owners[i];
+          next.push(n);
+        }
+      }
+      frontier = next;
+    }
+    return owners;
+  }
+
+  _syncFloor() {
+    const floor = this.floorAt(this.player.x, this.player.y);
+    if (floor < 0 || floor === this.currentFloor) return;
+    this.currentFloor = floor;
+    this._drawFloorShade();
+  }
+
+  _drawFloorShade() {
+    const g = this.floorShade;
+    g.clear();
+    if (this.floorCount < 2) return;
+    const { cols, rows } = this.tilemap;
+    for (let y = 0; y < rows; y++) {
+      let runStart = -1;
+      for (let x = 0; x <= cols; x++) {
+        const other = x < cols && this.floorOwners[y * cols + x] !== this.currentFloor;
+        if (other && runStart < 0) runStart = x;
+        if (!other && runStart >= 0) {
+          g.rect(runStart * TILE_SIZE, y * TILE_SIZE, (x - runStart) * TILE_SIZE, TILE_SIZE).fill({
+            color: 0x05050a,
+            alpha: FLOOR_SHADE_ALPHA,
+          });
+          runStart = -1;
+        }
+      }
+    }
+  }
+
+  _drawLinks() {
+    const g = this.linkView;
+    for (const link of this.links) {
+      for (const end of [link.a, link.b]) {
+        g.roundRect(end.x - 13, end.y - 13, 26, 26, 4)
+          .fill({ color: 0x1a1830 })
+          .stroke({ width: 2, color: COLOR.link, alpha: 0.9 });
+        if (link.kind === 'elevator') {
+          g.rect(end.x - 9, end.y - 9, 8, 18).fill({ color: COLOR.link, alpha: 0.35 });
+          g.rect(end.x + 1, end.y - 9, 8, 18).fill({ color: COLOR.link, alpha: 0.35 });
+        } else {
+          for (let i = 0; i < 4; i++) {
+            g.rect(end.x - 9 + i * 4.5, end.y + 6 - i * 5, 18 - i * 4.5, 3).fill({ color: COLOR.link, alpha: 0.65 });
+          }
+        }
+      }
+    }
+  }
+
+  /** The stairs/elevator end the player is standing at, if any. */
+  linkInReach() {
+    const { player } = this;
+    for (const link of this.links) {
+      for (const from of [link.a, link.b]) {
+        if (Math.hypot(from.x - player.x, from.y - player.y) <= LINK_REACH) return { link, from };
+      }
+    }
+    return null;
+  }
+
+  _useLink(link, from) {
+    const { player } = this;
+    const to = from === link.a ? link.b : link.a;
+    this.effects.burst(from.x, from.y, COLOR.link);
+    if (link.kind === 'elevator') {
+      player.inTransit = true;
+      if (player.dragging) player.dragging.view.visible = false;
+      this.transit = { link, to, timer: ELEVATOR_RIDE };
+      return;
+    }
+    this._arrive(link, to);
+  }
+
+  _updateTransit(dt) {
+    if (!this.transit) return;
+    this.transit.timer -= dt;
+    if (this.transit.timer > 0) return;
+    const { link, to } = this.transit;
+    this.transit = null;
+    this._arrive(link, to);
+  }
+
+  /** Stairs arrive silently; elevator doors open with a ding that guards on that floor come to check. */
+  _arrive(link, to) {
+    const { player } = this;
+    player.inTransit = false;
+    player.x = to.x;
+    player.y = to.y;
+    player.lockTimer = LINK_LOCK_TIME;
+    if (player.dragging) {
+      player.dragging.x = to.x;
+      player.dragging.y = to.y;
+      player.dragging.view.visible = true;
+    }
+    this.tracks.jump(player, this.bodies);
+    this._syncFloor();
+    this.effects.burst(to.x, to.y, COLOR.link);
+    if (link.kind === 'elevator') this.emitNoise(to.x, to.y, ELEVATOR_DING_RADIUS, false, { color: COLOR.link });
+    this.emit('transit');
+  }
+
+  // --- radios --------------------------------------------------------------------
+
+  /** Each channel checks in on a timer; members killed since the last check get someone sent to look. */
+  _updateRadios(dt) {
+    for (const channel of this.channels.values()) {
+      channel.timer -= dt;
+      if (channel.timer > 0) continue;
+      channel.timer = RADIO_CHECKIN_INTERVAL;
+      if (channel.missing.length === 0 || channel.members.size === 0) continue;
+
+      for (const spot of channel.missing) {
+        let nearest = null;
+        let bestDist = Infinity;
+        for (const guard of channel.members) {
+          if (guard.state === GuardState.ALERT) continue;
+          const dist = Math.hypot(guard.x - spot.x, guard.y - spot.y);
+          if (dist < bestDist) {
+            bestDist = dist;
+            nearest = guard;
+          }
+        }
+        if (!nearest) continue;
+        nearest.investigate(spot.x, spot.y);
+        this.effects.ring(nearest.x, nearest.y, 60, COLOR.radio, 0.8);
+      }
+      this.stats.radioChecksFailed += channel.missing.length;
+      channel.missing = [];
+      this.radioNotice = { text: '📻 Missed radio check-in — a guard is coming to look', timer: RADIO_NOTICE_TIME };
+    }
+  }
+
+  /** HUD line for radio nets: a countdown while a silenced guard is still unaccounted for. */
+  radioStatus() {
+    if (this.radioNotice.timer > 0) return this.radioNotice.text;
+    let soonest = Infinity;
+    for (const channel of this.channels.values()) {
+      if (channel.missing.length && channel.members.size) soonest = Math.min(soonest, channel.timer);
+    }
+    return soonest < Infinity ? `📻 Radio check-in in ${Math.ceil(soonest)}s` : null;
+  }
+
+  /** HUD hint for what E would do right now. */
+  interactionHint() {
+    if (this.finished || this.player.inTransit) return null;
+    const pad = this.linkInReach();
+    if (pad) return pad.link.kind === 'elevator' ? 'E — ride the elevator' : 'E — take the stairs';
+    if (this.player.dragging) return null;
+    if (this.hackablePanel()) return 'E — disable alarm panel';
+    return null;
   }
 
   // --- wildlife ----------------------------------------------------------------

@@ -8,14 +8,21 @@ const DIRS = [
 ];
 const CLEARANCE_MARGIN = 2;
 const SEGMENT_SAMPLE_STEP = 6;
+// Taking stairs or an elevator costs about as much as walking a few tiles.
+const LINK_COST = 4;
 
 /**
  * 8-directional A* over the tile grid (no diagonal corner-cutting), followed
  * by greedy string-pulling so bodies walk straight lines where the space is
  * clear instead of zig-zagging through tile centers.
+ *
+ * If the map has `links` (stairs/elevators: a Map of tile index -> tile index),
+ * paths may use them; the point reached through a link is flagged
+ * `teleport: true`, meaning "jump here from the previous point".
  * Returns an array of world-space points ending exactly at the goal, or null.
  */
 export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
+  const { links } = tilemap;
   const { cols } = tilemap;
   const startX = Math.floor(sx / TILE_SIZE);
   const startY = Math.floor(sy / TILE_SIZE);
@@ -36,8 +43,9 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
   gScore[start] = 0;
   open.push(start, octile(startX, startY, goalX, goalY));
 
+  let current;
   while (open.size > 0) {
-    const current = open.pop();
+    current = open.pop();
     if (current === goal) break;
     if (closed[current]) continue;
     closed[current] = 1;
@@ -50,14 +58,22 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
       if (tilemap.isSolid(nx, ny)) continue;
       if (dx !== 0 && dy !== 0 && (tilemap.isSolid(cx + dx, cy) || tilemap.isSolid(cx, cy + dy))) continue;
 
-      const next = ny * cols + nx;
-      if (closed[next]) continue;
-      const tentative = gScore[current] + cost;
-      if (tentative < gScore[next]) {
-        gScore[next] = tentative;
-        parent[next] = current;
-        open.push(next, tentative + octile(nx, ny, goalX, goalY));
-      }
+      relax(ny * cols + nx, cost, nx, ny);
+    }
+    const linked = links?.get(current);
+    if (linked !== undefined) {
+      const lx = linked % cols;
+      relax(linked, LINK_COST, lx, (linked - lx) / cols);
+    }
+  }
+
+  function relax(next, cost, nx, ny) {
+    if (closed[next]) return;
+    const tentative = gScore[current] + cost;
+    if (tentative < gScore[next]) {
+      gScore[next] = tentative;
+      parent[next] = current;
+      open.push(next, tentative + octile(nx, ny, goalX, goalY));
     }
   }
 
@@ -67,26 +83,45 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
   for (let node = goal; node !== start; node = parent[node]) tiles.push(node);
   tiles.reverse();
 
+  let previous = start;
   const points = tiles.map((node) => {
     const x = node % cols;
     const y = (node - x) / cols;
-    return { x: (x + 0.5) * TILE_SIZE, y: (y + 0.5) * TILE_SIZE };
+    const px = previous % cols;
+    const py = (previous - px) / cols;
+    previous = node;
+    const point = { x: (x + 0.5) * TILE_SIZE, y: (y + 0.5) * TILE_SIZE };
+    // Non-adjacent consecutive tiles can only come from a link.
+    if (Math.abs(x - px) > 1 || Math.abs(y - py) > 1) point.teleport = true;
+    return point;
   });
-  points[points.length - 1] = { x: gx, y: gy };
+  const last = points[points.length - 1];
+  points[points.length - 1] = { x: gx, y: gy, teleport: last.teleport };
 
   return smoothPath(tilemap, { x: sx, y: sy }, points, halfSize + CLEARANCE_MARGIN);
 }
 
+/** String-pulls the path but never across a link: the pad and the arrival point always stay. */
 function smoothPath(tilemap, start, points, half) {
   const result = [];
   let anchor = start;
+  if (points[0].teleport) {
+    result.push(points[0]);
+    anchor = points[0];
+  }
   for (let i = 1; i < points.length; i++) {
-    if (!isSegmentClear(tilemap, anchor, points[i], half)) {
+    if (points[i].teleport) {
+      if (result.at(-1) !== points[i - 1]) result.push(points[i - 1]);
+      result.push(points[i]);
+      anchor = points[i];
+      continue;
+    }
+    if (!isSegmentClear(tilemap, anchor, points[i], half) && result.at(-1) !== points[i - 1]) {
       result.push(points[i - 1]);
       anchor = points[i - 1];
     }
   }
-  result.push(points[points.length - 1]);
+  if (result.at(-1) !== points[points.length - 1]) result.push(points[points.length - 1]);
   return result;
 }
 

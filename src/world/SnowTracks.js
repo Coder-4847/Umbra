@@ -38,6 +38,12 @@ export class SnowTracks {
     this._draw();
   }
 
+  /** After a teleport (stairs/elevator): start fresh strides instead of printing the jump. */
+  jump(player, bodies) {
+    this._lastStep = { x: player.x, y: player.y };
+    for (const body of bodies) if (body.carried) this._dragLast.set(body, { x: body.x, y: body.y });
+  }
+
   _trackPlayer(player) {
     const last = this._lastStep;
     if (!last) {

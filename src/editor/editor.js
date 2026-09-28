@@ -29,6 +29,7 @@ const TOOLS = [
   { id: 'camera', key: 'c', label: 'Camera' },
   { id: 'laser', key: 'l', label: 'Laser' },
   { id: 'panel', key: 'p', label: 'Panel' },
+  { id: 'link', key: 't', label: 'Stairs' },
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
@@ -49,6 +50,7 @@ const COLOR = {
   camera: '#7dd3fc',
   laser: '#ff4d4d',
   panel: '#4ade80',
+  link: '#c4b5fd',
   cameraCone: 'rgba(125, 211, 252, 0.16)',
   cameraConeFaint: 'rgba(125, 211, 252, 0.06)',
 };
@@ -67,6 +69,7 @@ const TOOL_HINTS = {
   camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
   laser: 'Click one end, then the other, to string a tripwire · right-click cancels · set pulse timing and panel link in the panel',
   panel: 'Click a floor tile to add an alarm panel, or click one to select and drag it · give it an id to wire lasers and cameras to it',
+  link: 'Click one end, then the other, to connect floors with stairs or an elevator · right-click cancels · pick the kind in the panel',
   select: 'Click a waypoint or camera to select, drag to move · Del removes it (Shift+Del removes the whole guard)',
 };
 
@@ -79,7 +82,7 @@ function blankDoc(cols = 40, rows = 28) {
     Array.from({ length: cols }, (_, x) => (x === 0 || y === 0 || x === cols - 1 || y === rows - 1 ? '#' : '.')),
   );
   tiles[2][2] = 'P';
-  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [], panels: [], lasers: [] };
+  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [], panels: [], lasers: [], links: [] };
 }
 
 function docFromJson(json) {
@@ -93,6 +96,7 @@ function docFromJson(json) {
     guards: (json.guards ?? []).map((g) => ({
       route: g.route ?? 'loop',
       target: g.target === true,
+      radio: g.radio,
       patrol: (g.patrol ?? []).map((wp) =>
         Array.isArray(wp) ? { x: wp[0], y: wp[1], wait: wp[2], look: wp[3] } : { ...wp },
       ),
@@ -100,6 +104,7 @@ function docFromJson(json) {
     cameras: (json.cameras ?? []).map((c) => ({ ...c })),
     panels: (json.panels ?? []).map((p) => ({ ...p })),
     lasers: (json.lasers ?? []).map((l) => ({ ...l })),
+    links: (json.links ?? []).map((l) => ({ ...l })),
   };
 }
 
@@ -115,6 +120,7 @@ function jsonFromDoc(doc) {
     guards: doc.guards.map((g) => ({
       route: g.route,
       target: g.target || undefined,
+      radio: g.radio || undefined,
       patrol: g.patrol.map(({ x, y, wait, look }) => ({ x, y, wait: wait || undefined, look: look ?? undefined })),
     })),
     cameras: doc.cameras.length
@@ -129,6 +135,9 @@ function jsonFromDoc(doc) {
           offset: offset || undefined, panel: panel || undefined,
         }))
       : undefined,
+    links: doc.links.length
+      ? doc.links.map(({ x1, y1, x2, y2, kind }) => ({ x1, y1, x2, y2, kind: kind === 'elevator' ? kind : undefined }))
+      : undefined,
   };
 }
 
@@ -137,7 +146,7 @@ const docText = (doc) => formatLevelJson(jsonFromDoc(doc));
 // --- state ---------------------------------------------------------------------
 
 /** At most one thing is selected: a guard (optionally one of its waypoints), a camera, a laser or a panel. */
-const noSelection = () => ({ guard: -1, wp: -1, camera: -1, laser: -1, panel: -1 });
+const noSelection = () => ({ guard: -1, wp: -1, camera: -1, laser: -1, panel: -1, link: -1 });
 
 const state = {
   doc: blankDoc(),
@@ -218,6 +227,7 @@ function loadDoc(doc, savedText) {
   doc.cameras ??= [];
   doc.panels ??= [];
   doc.lasers ??= [];
+  doc.links ??= [];
   state.doc = doc;
   state.savedText = savedText;
   undoStack.length = 0;
@@ -269,7 +279,7 @@ function selectItem(kind, index) {
 }
 
 function clampSelection() {
-  for (const [kind, list] of [['camera', 'cameras'], ['laser', 'lasers'], ['panel', 'panels']]) {
+  for (const [kind, list] of [['camera', 'cameras'], ['laser', 'lasers'], ['panel', 'panels'], ['link', 'links']]) {
     if (state.sel[kind] >= 0) {
       if (!state.doc[list][state.sel[kind]]) state.sel = noSelection();
       return;
@@ -295,6 +305,12 @@ function findLaser(cell) {
   );
 }
 
+function findLink(cell) {
+  return state.doc.links.findIndex(
+    (l) => (l.x1 === cell.x && l.y1 === cell.y) || (l.x2 === cell.x && l.y2 === cell.y),
+  );
+}
+
 function nextPanelId() {
   const used = new Set(state.doc.panels.map((p) => p.id));
   for (let i = 0; i < 26; i++) {
@@ -316,7 +332,14 @@ function findWaypoint(cell) {
 
 function deleteSelection(wholeGuard) {
   const { doc, sel } = state;
-  if (sel.camera >= 0 || sel.laser >= 0 || sel.panel >= 0) {
+  if (sel.camera >= 0 || sel.laser >= 0 || sel.panel >= 0 || sel.link >= 0) {
+    if (sel.link >= 0) {
+      checkpoint();
+      doc.links.splice(sel.link, 1);
+      state.sel = noSelection();
+      onDocChanged(true);
+      return;
+    }
     checkpoint();
     if (sel.camera >= 0) doc.cameras.splice(sel.camera, 1);
     if (sel.laser >= 0) doc.lasers.splice(sel.laser, 1);
@@ -349,7 +372,8 @@ function setTool(id) {
   state.tool = id;
   for (const btn of toolsNav.querySelectorAll('button')) btn.classList.toggle('active', btn.dataset.tool === id);
   state.laserStart = null;
-  if (!['guard', 'camera', 'laser', 'panel', 'select'].includes(id)) state.sel = noSelection();
+  state.linkStart = null;
+  if (!['guard', 'camera', 'laser', 'panel', 'link', 'select'].includes(id)) state.sel = noSelection();
   renderPanel();
   render();
   renderStatus();
@@ -486,9 +510,44 @@ function onPointerDown(e) {
     return;
   }
 
+  if (tool === 'link') {
+    if (erase) {
+      state.linkStart = null;
+      select(-1, -1);
+      return;
+    }
+    if (!cell.inside) return;
+    const hit = findLink(cell);
+    if (!state.linkStart && hit >= 0) {
+      selectItem('link', hit);
+      return;
+    }
+    if (!state.linkStart) {
+      state.linkStart = { x: cell.x, y: cell.y };
+      render();
+      return;
+    }
+    const start = state.linkStart;
+    state.linkStart = null;
+    if (start.x === cell.x && start.y === cell.y) {
+      render();
+      return;
+    }
+    checkpoint();
+    doc.links.push({ x1: start.x, y1: start.y, x2: cell.x, y2: cell.y, kind: 'stairs' });
+    state.sel = { ...noSelection(), link: doc.links.length - 1 };
+    onDocChanged(true);
+    return;
+  }
+
   if (tool === 'select') {
     if (!cell.inside) {
       select(-1, -1);
+      return;
+    }
+    const linkHit = findLink(cell);
+    if (linkHit >= 0 && findWaypoint(cell) === null) {
+      selectItem('link', linkHit);
       return;
     }
     const hit = findWaypoint(cell);
@@ -628,6 +687,7 @@ function onKeyDown(e) {
     canvas.style.cursor = 'grab';
   } else if (e.key === 'Escape') {
     state.laserStart = null;
+    state.linkStart = null;
     select(-1, -1);
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
@@ -979,6 +1039,54 @@ function drawSecurity(z) {
     }
   }
 
+  state.doc.links.forEach((link, li) => {
+    const selected = li === state.sel.link;
+    const [ax, ay] = center(link.x1, link.y1);
+    const [bx, by] = center(link.x2, link.y2);
+    ctx.strokeStyle = COLOR.link;
+    ctx.globalAlpha = selected ? 0.9 : 0.4;
+    ctx.lineWidth = selected ? 2 : 1.5;
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = 1;
+    for (const [ex, ey] of [[ax, ay], [bx, by]]) {
+      ctx.fillStyle = '#1a1830';
+      ctx.fillRect(ex - z * 0.4, ey - z * 0.4, z * 0.8, z * 0.8);
+      ctx.strokeStyle = selected ? '#ffffff' : COLOR.link;
+      ctx.lineWidth = selected ? 2 : 1.5;
+      ctx.strokeRect(ex - z * 0.4, ey - z * 0.4, z * 0.8, z * 0.8);
+      if (z >= 10) {
+        ctx.fillStyle = COLOR.link;
+        ctx.font = `bold ${Math.round(z * 0.45)}px system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(link.kind === 'elevator' ? 'E' : 'S', ex, ey + 1);
+      }
+    }
+  });
+
+  if (state.linkStart) {
+    const [ax, ay] = center(state.linkStart.x, state.linkStart.y);
+    ctx.strokeStyle = COLOR.link;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(ax - z * 0.4, ay - z * 0.4, z * 0.8, z * 0.8);
+    if (state.hover) {
+      const [bx, by] = center(state.hover.x, state.hover.y);
+      ctx.globalAlpha = 0.6;
+      ctx.setLineDash([3, 5]);
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+    }
+  }
+
   state.doc.panels.forEach((panel, pi) => {
     const [cx, cy] = center(panel.x, panel.y);
     ctx.fillStyle = '#2a2d38';
@@ -1041,6 +1149,20 @@ function renderPanel() {
   const camera = doc.cameras[sel.camera];
   const laser = doc.lasers[sel.laser];
   const alarmPanel = doc.panels[sel.panel];
+  const link = doc.links[sel.link];
+
+  const linkSection = link
+    ? `<section>
+        <h2>Link ${sel.link + 1} <span style="font-weight:400;text-transform:none;letter-spacing:0">(${link.x1},${link.y1}) ↔ (${link.x2},${link.y2})</span></h2>
+        <label>Kind
+          <select data-link="kind">
+            <option value="stairs" ${link.kind !== 'elevator' ? 'selected' : ''}>stairs — instant, silent</option>
+            <option value="elevator" ${link.kind === 'elevator' ? 'selected' : ''}>elevator — short ride, dings on arrival</option>
+          </select>
+        </label>
+        <button data-action="delete-link" class="danger">Delete link</button>
+      </section>`
+    : '';
 
   const laserSection = laser
     ? `<section>
@@ -1097,6 +1219,7 @@ function renderPanel() {
           </label>
           <label class="check"><input type="checkbox" data-guard="target" ${guard.target ? 'checked' : ''}> Target</label>
         </div>
+        <label>Radio channel <input data-guard="radio" value="${esc(guard.radio ?? '')}" placeholder="none — e.g. red"></label>
         <table class="waypoints">
           <thead><tr><th>#</th><th>Tile</th><th>Wait (s)</th><th>Look</th><th></th></tr></thead>
           <tbody>
@@ -1142,6 +1265,7 @@ function renderPanel() {
     ${cameraSection}
     ${laserSection}
     ${panelSection}
+    ${linkSection}
     <section>
       <h2>Validation</h2>
       <div id="validation"></div>
@@ -1149,7 +1273,7 @@ function renderPanel() {
     <section class="help">
       <h2>Shortcuts</h2>
       <dl>
-        <dt>1–9, G, C, L, P, V</dt><dd>Tools</dd>
+        <dt>1–9, G, C, L, P, T, V</dt><dd>Tools</dd>
         <dt>Shift+drag</dt><dd>Rectangle fill</dd>
         <dt>Right-drag</dt><dd>Erase to floor</dd>
         <dt>Space+drag / wheel</dt><dd>Pan / zoom</dd>
@@ -1195,8 +1319,13 @@ function onPanelChange(e) {
     checkpoint();
     const guard = doc.guards[state.sel.guard];
     if (el.dataset.guard === 'route') guard.route = el.value;
+    else if (el.dataset.guard === 'radio') guard.radio = el.value.trim() || undefined;
     else guard.target = el.checked;
     onDocChanged();
+  } else if (el.dataset.link) {
+    checkpoint();
+    doc.links[state.sel.link].kind = el.value;
+    onDocChanged(true);
   } else if (el.dataset.wpField) {
     checkpoint();
     const wi = Number(el.closest('tr').dataset.wp);
@@ -1266,7 +1395,7 @@ function onPanelClick(e) {
     deleteSelection(false);
     return;
   }
-  if (['delete-guard', 'delete-camera', 'delete-laser', 'delete-panel'].includes(action)) {
+  if (['delete-guard', 'delete-camera', 'delete-laser', 'delete-panel', 'delete-link'].includes(action)) {
     deleteSelection(true);
     return;
   }

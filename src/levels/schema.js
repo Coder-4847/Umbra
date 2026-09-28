@@ -38,6 +38,13 @@
  * Lasers are tripwire beams between two tile centers (x1,y1)-(x2,y2) that must have
  * a clear line between them. `period` > 0 makes one pulse: on for `onTime` seconds
  * of every `period`, shifted by `offset`; period 0 (default) means always on.
+ * Links connect two floor tiles as stairs or an elevator:
+ *   "links": [{ "x1": 3, "y1": 2, "x2": 20, "y2": 2, "kind": "stairs" }]   // kind: stairs | elevator
+ * Walkable areas that only links connect are separate floors: sound doesn't carry
+ * between them, radios and security systems do. Guards path through links too.
+ * A guard's optional "radio": "<channel>" puts it on a radio net: the channel shares
+ * sightings and found bodies level-wide, and checks in every few seconds, sending
+ * someone to look when a member has gone silent.
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
@@ -121,6 +128,7 @@ function readLevel(json, errors) {
   const panelIds = new Set(panels.map((p) => p.id).filter(Boolean));
   const cameras = readCameras(json.cameras ?? [], map, panelIds, errors);
   const lasers = readLasers(json.lasers ?? [], map, panelIds, errors);
+  const links = readLinks(json.links ?? [], map, errors);
   const objectives = readObjectives(json.objectives, tiles, guards, errors);
 
   return {
@@ -134,7 +142,42 @@ function readLevel(json, errors) {
     cameras,
     panels,
     lasers,
+    links,
   };
+}
+
+const LINK_KINDS = ['stairs', 'elevator'];
+
+function readLinks(list, map, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"links" must be an array');
+    return [];
+  }
+  const links = [];
+  const usedTiles = new Set();
+  list.forEach((link, li) => {
+    const label = `Link ${li + 1}`;
+    const { x1, y1, x2, y2 } = link ?? {};
+    if (![x1, y1, x2, y2].every(Number.isInteger)) {
+      errors.push(`${label}: x1, y1, x2, y2 must be whole tile coordinates`);
+      return;
+    }
+    const kind = link.kind ?? 'stairs';
+    if (!LINK_KINDS.includes(kind)) errors.push(`${label}: kind must be "stairs" or "elevator"`);
+    if (map.isSolid(x1, y1) || map.isSolid(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
+    if (x1 === x2 && y1 === y2) errors.push(`${label}: its two ends must be different tiles`);
+    for (const key of new Set([`${x1},${y1}`, `${x2},${y2}`])) {
+      if (usedTiles.has(key)) errors.push(`${label}: tile (${key}) is already the end of another link`);
+      usedTiles.add(key);
+    }
+    links.push({
+      kind,
+      tx1: x1, ty1: y1, tx2: x2, ty2: y2,
+      a: { ...tileCenter(x1, y1), tx: x1, ty: y1 },
+      b: { ...tileCenter(x2, y2), tx: x2, ty: y2 },
+    });
+  });
+  return links;
 }
 
 function readPanelLink(value, label, panelIds, errors) {
@@ -308,7 +351,9 @@ function readGuards(list, map, errors) {
     }
     const patrol = guard.patrol.map((wp, wi) => readWaypoint(wp, `${label} waypoint ${wi + 1}`, map, errors));
     if (patrol.includes(null)) return;
-    guards.push({ route, target: guard.target === true, patrol });
+    const radio = guard.radio ?? null;
+    if (radio !== null && (typeof radio !== 'string' || radio === '')) errors.push(`${label}: radio must be a channel name`);
+    guards.push({ route, target: guard.target === true, radio, patrol });
   });
   return guards;
 }
@@ -357,6 +402,7 @@ function readObjectives(list, tiles, guards, errors) {
 
 function checkPlayability(level, errors, warnings) {
   const map = new GridMap(level.cols, level.rows, level.grid);
+  map.setLinks(level.links);
   const { spawn } = level;
   const reachable = (p) => findPath(map, spawn.x, spawn.y, p.x, p.y, BODY_HALF_SIZE) !== null;
 
@@ -410,6 +456,20 @@ function checkPlayability(level, errors, warnings) {
   });
   for (const panel of level.panels) {
     if (!reachable(panel)) warnings.push(`Panel at (${panel.tx},${panel.ty}) can't be reached, so the player can never hack it`);
+  }
+
+  const floors = map.computeFloors();
+  level.links.forEach((link, li) => {
+    if (floors[link.ty1 * level.cols + link.tx1] === floors[link.ty2 * level.cols + link.tx2]) {
+      warnings.push(`Link ${li + 1} connects two spots on the same floor`);
+    }
+    if (!reachable(link.a) && !reachable(link.b)) warnings.push(`Link ${li + 1} can't be reached from the spawn`);
+  });
+
+  const channels = new Map();
+  for (const guard of level.guards) if (guard.radio) channels.set(guard.radio, (channels.get(guard.radio) ?? 0) + 1);
+  for (const [channel, count] of channels) {
+    if (count === 1) warnings.push(`Radio channel "${channel}" has only one guard, so nobody hears it`);
   }
 
   for (const flock of level.wildlife) {

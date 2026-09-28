@@ -56,6 +56,11 @@ function startLevel() {
   });
 
   camera = new Camera(level.player, { lerpSpeed: 6 });
+  // A floor change is a cut, not a pan across the building.
+  level.on('transit', () => {
+    camera.x = level.player.x;
+    camera.y = level.player.y;
+  });
   if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData };
 }
 
@@ -73,7 +78,10 @@ function updateHud() {
   });
   if (level.fullAlarm) lines.push('⚠ ALARM RAISED');
   else if (level.alarmRunner) lines.push('⚠ A guard is running for the alarm!');
-  if (!level.finished && !level.player.dragging && level.hackablePanel()) lines.push('E — disable alarm panel');
+  const radio = level.radioStatus();
+  if (radio) lines.push(radio);
+  const hint = level.interactionHint();
+  if (hint) lines.push(hint);
   const text = [levelData.name, ...lines].join('\n');
   if (text !== hudText) {
     hudText = text;

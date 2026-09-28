@@ -73,12 +73,13 @@ const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
  * 'shoot' (guard) when it fires, 'bodyFound' (guard, body).
  */
 export class Guard extends EventEmitter {
-  constructor({ tilemap, patrol, route = 'loop', target = false }) {
+  constructor({ tilemap, patrol, route = 'loop', target = false, radio = null }) {
     super();
     this.tilemap = tilemap;
     this.patrol = patrol.length === 1 ? [{ ...patrol[0], wait: Infinity }] : patrol;
     this.route = route;
     this.target = target;
+    this.radio = radio;
 
     this.x = patrol[0].x;
     this.y = patrol[0].y;
@@ -231,7 +232,7 @@ export class Guard extends EventEmitter {
 
   _canSeePlayer(player, sawLastFrame) {
     this.playerDist = Math.hypot(player.x - this.x, player.y - this.y);
-    if (player.dead) return false;
+    if (player.dead || player.inTransit) return false;
     // Cover only works if you slip into it unseen; a guard already watching keeps tracking you.
     const range = player.isHidden && !sawLastFrame ? HIDDEN_DETECT_RANGE : this.visionRange;
     return this._canSeePoint(player.x, player.y, range + player.halfSize);
@@ -492,6 +493,13 @@ export class Guard extends EventEmitter {
     let budget = speed * dt;
     while (this.pathIndex < this.path.length) {
       const target = this.path[this.pathIndex];
+      // Reached a stairs/elevator pad (the previous point): step through to the other end.
+      if (target.teleport) {
+        this.x = target.x;
+        this.y = target.y;
+        this.pathIndex++;
+        continue;
+      }
       const dx = target.x - this.x;
       const dy = target.y - this.y;
       const dist = Math.hypot(dx, dy);

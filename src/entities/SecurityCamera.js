@@ -188,7 +188,7 @@ export class SecurityCamera extends EventEmitter {
 
   _canSeePlayer(player, sawLastFrame) {
     this.playerDist = Math.hypot(player.x - this.x, player.y - this.y);
-    if (player.dead) return false;
+    if (player.dead || player.inTransit) return false;
     const range = player.isHidden && !sawLastFrame ? HIDDEN_DETECT_RANGE : CAMERA_RANGE;
     return this._canSeePoint(player.x, player.y, range + player.halfSize);
   }

@@ -24,6 +24,8 @@ export class Player {
     this.sprinting = false;
     this.isHidden = false;
     this.dragging = null;
+    // Riding an elevator: out of sight and untouchable until the doors open.
+    this.inTransit = false;
 
     this.view = this._buildView();
     this._drawnHp = -1;
@@ -71,7 +73,8 @@ export class Player {
     this.body.rotation = this.facing;
     this.body.tint = this.hitFlash > 0 ? 0xff6b6b : 0x4ade80;
 
-    if (this.dead) this.view.alpha = 0.35;
+    if (this.inTransit) this.view.alpha = 0;
+    else if (this.dead) this.view.alpha = 0.35;
     else if (this.invulnTimer > 0 && Math.floor(this.invulnTimer * 20) % 2 === 0) this.view.alpha = 0.3;
     else this.view.alpha = this.isHidden ? 0.5 : 1;
 

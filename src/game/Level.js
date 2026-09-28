@@ -11,6 +11,9 @@ import { Body } from '../entities/Body.js';
 import { SecurityCamera } from '../entities/SecurityCamera.js';
 import { Birds } from '../entities/Birds.js';
 import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
+import { Laser } from '../entities/Laser.js';
+import { AlarmPanel } from '../entities/AlarmPanel.js';
+import { PANEL_REACH } from '../entities/securityRules.js';
 import { angleDiff } from '../core/math.js';
 
 const TAKEDOWN_RANGE = 36;
@@ -31,6 +34,10 @@ const WILDLIFE_HEARING = 0.6;
 const BACKUP_RADIUS = 360;
 // Cameras are wired into the security system, so their alarms reach further than a shout.
 const CAMERA_ALARM_RADIUS = 520;
+const LASER_ALARM_RADIUS = 520;
+// A guard who spots the player only runs for a panel within this range.
+const PANEL_RUN_RANGE = 700;
+const HACK_LOCK_TIME = 0.4;
 const PICKUP_RANGE = 22;
 
 const COLOR = {
@@ -43,6 +50,7 @@ const COLOR = {
   exit: 0x4ade80,
   exitLocked: 0x3a5a46,
   intel: 0xffd166,
+  hack: 0x7dd3fc,
 };
 
 const OBJECTIVE_LABELS = {
@@ -58,7 +66,7 @@ const OBJECTIVE_LABELS = {
  * connect them (takedowns, noise, backup calls, damage, objectives).
  *
  * Events: 'failed' (stats) when the player dies, 'completed' (stats) when all
- * objectives are done.
+ * objectives are done, 'alarm' when a guard raises a full alarm at a panel.
  */
 export class Level extends EventEmitter {
   constructor(data) {
@@ -70,6 +78,7 @@ export class Level extends EventEmitter {
     this.tracks = new SnowTracks(this.tilemap);
 
     this.root = new Container();
+    this.hazardLayer = new Container();
     this.bodyLayer = new Container();
     this.coneLayer = new Container();
     this.entityLayer = new Container();
@@ -79,6 +88,7 @@ export class Level extends EventEmitter {
       this.tilemap.view,
       this.tracks.view,
       this.markers,
+      this.hazardLayer,
       this.bodyLayer,
       this.coneLayer,
       this.entityLayer,
@@ -87,12 +97,29 @@ export class Level extends EventEmitter {
     );
 
     this.player = new Player(data.spawn.x, data.spawn.y);
+    this.panels = data.panels.map((config) => new AlarmPanel(config));
+    const panelsById = new Map(this.panels.filter((p) => p.id).map((p) => [p.id, p]));
+    this.lasers = data.lasers.map((config) => {
+      const laser = new Laser(config);
+      laser.panel = panelsById.get(config.panel) ?? null;
+      return laser;
+    });
+    for (const laser of this.lasers) this.hazardLayer.addChild(laser.view);
+    for (const panel of this.panels) this.hazardLayer.addChild(panel.view);
+
     this.guards = data.guards.map((guardConfig) => this._addGuard(guardConfig));
-    this.cameras = data.cameras.map((cameraConfig) => this._addCamera(cameraConfig));
+    this.cameras = data.cameras.map((cameraConfig) => {
+      const camera = this._addCamera(cameraConfig);
+      camera.panel = panelsById.get(cameraConfig.panel) ?? null;
+      return camera;
+    });
     this.wildlife = data.wildlife.map((point) => new Birds(point.x, point.y));
     for (const flock of this.wildlife) this.entityLayer.addChild(flock.view);
     this.entityLayer.addChild(this.player.view);
     this.bodies = [];
+
+    this.fullAlarm = false;
+    this.alarmRunner = null;
 
     this.objectives = data.objectives;
     this.exits = data.exits;
@@ -101,7 +128,16 @@ export class Level extends EventEmitter {
     this.totalTargets = this.guards.filter((g) => g.target).length;
     this.exitUnlocked = false;
 
-    this.stats = { elapsed: 0, kills: 0, stealthKills: 0, detections: 0, bodiesDiscovered: 0, wildlifeFlushed: 0 };
+    this.stats = {
+      elapsed: 0,
+      kills: 0,
+      stealthKills: 0,
+      detections: 0,
+      bodiesDiscovered: 0,
+      wildlifeFlushed: 0,
+      lasersTripped: 0,
+      fullAlarms: 0,
+    };
     this.failed = false;
     this.completed = false;
     this.time = 0;
@@ -120,6 +156,7 @@ export class Level extends EventEmitter {
       this.stats.elapsed += dt;
       this._updatePlayer(dt, input);
       this._checkWildlifeProximity();
+      this._checkLasers();
       this._updateObjectives();
     } else {
       player.update(dt, { x: 0, y: 0 }, 0, this.tilemap);
@@ -131,6 +168,7 @@ export class Level extends EventEmitter {
       for (const guard of this.guards) guard.update(dt, ctx);
       for (const camera of this.cameras) camera.update(dt, ctx);
       this._separateGuards();
+      this._syncAlarmRunner();
     }
 
     for (const body of this.bodies) {
@@ -139,6 +177,8 @@ export class Level extends EventEmitter {
     }
     this.tracks.update(dt, player, this.bodies);
     for (const flock of this.wildlife) flock.update(dt);
+    for (const laser of this.lasers) laser.update(dt, this.time);
+    for (const panel of this.panels) panel.update(this.time);
 
     this._drawMarkers();
     this.effects.update(dt);
@@ -230,7 +270,7 @@ export class Level extends EventEmitter {
     const { player } = this;
 
     if (input.wasActionPressed('attack')) this._tryTakedown();
-    if (input.wasActionPressed('interact')) this._toggleDrag();
+    if (input.wasActionPressed('interact')) this._interact();
 
     const move = input.getMoveVector();
     const moving = move.x !== 0 || move.y !== 0;
@@ -284,10 +324,16 @@ export class Level extends EventEmitter {
     if (!silent) this.emitNoise(target.x, target.y, LOUD_KILL_NOISE_RADIUS, true);
   }
 
-  _toggleDrag() {
+  /** E: drop a carried body, else hack a panel in reach, else grab a nearby body. */
+  _interact() {
     const { player } = this;
     if (player.dragging) {
       this._drop();
+      return;
+    }
+    const panel = this.hackablePanel();
+    if (panel) {
+      this._hackPanel(panel);
       return;
     }
     let nearest = null;
@@ -337,10 +383,12 @@ export class Level extends EventEmitter {
     guard.on('alert', () => this._onGuardSpottedPlayer(guard));
     guard.on('shoot', () => this._onGuardShoot(guard));
     guard.on('bodyFound', (_, body) => this._onBodyFound(guard, body));
+    guard.on('raiseAlarm', (_, panel) => this._raiseFullAlarm(guard, panel));
     return guard;
   }
 
   _removeGuard(guard) {
+    if (guard === this.alarmRunner) this._clearAlarmRunner();
     guard.kill();
     guard.removeAllListeners();
     this.guards.splice(this.guards.indexOf(guard), 1);
@@ -356,6 +404,96 @@ export class Level extends EventEmitter {
       if (guard === caller) continue;
       if (Math.hypot(guard.x - caller.x, guard.y - caller.y) > BACKUP_RADIUS) continue;
       guard.alertTo(caller.lastKnown.x, caller.lastKnown.y);
+    }
+    this._maybeSendAlarmRunner(caller);
+  }
+
+  // --- alarm panels & lasers ------------------------------------------------------
+
+  /** The working (not hacked) panel within the player's reach, if any. */
+  hackablePanel() {
+    const { player } = this;
+    return (
+      this.panels.find(
+        (panel) => !panel.disabled && Math.hypot(panel.x - player.x, panel.y - player.y) <= PANEL_REACH,
+      ) ?? null
+    );
+  }
+
+  _hackPanel(panel) {
+    panel.disabled = true;
+    panel.targeted = false;
+    for (const laser of this.lasers) if (laser.panel === panel) laser.disabled = true;
+    for (const camera of this.cameras) if (camera.panel === panel) camera.disabled = true;
+    this.player.lockTimer = HACK_LOCK_TIME;
+    this.effects.burst(panel.x, panel.y, COLOR.hack);
+  }
+
+  /** The guard who spotted the player breaks off to raise the alarm, if a working panel is near. */
+  _maybeSendAlarmRunner(guard) {
+    if (this.fullAlarm || this.alarmRunner) return;
+    let best = null;
+    let bestDist = PANEL_RUN_RANGE;
+    for (const panel of this.panels) {
+      if (!panel.working) continue;
+      const dist = Math.hypot(panel.x - guard.x, panel.y - guard.y);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = panel;
+      }
+    }
+    if (!best) return;
+    guard.runToPanel(best);
+    best.targeted = true;
+    this.alarmRunner = guard;
+  }
+
+  /** Releases the runner once its run ends for any reason (reached, cancelled, panel hacked). */
+  _syncAlarmRunner() {
+    if (this.alarmRunner && !this.alarmRunner.alarmRun) this._clearAlarmRunner();
+  }
+
+  _clearAlarmRunner() {
+    for (const panel of this.panels) panel.targeted = false;
+    this.alarmRunner = null;
+  }
+
+  /** Base-wide alarm: every guard on the map converges on the player's last known position. */
+  _raiseFullAlarm(guard, panel) {
+    if (this.fullAlarm) return;
+    this.fullAlarm = true;
+    this.stats.fullAlarms++;
+    panel.triggered = true;
+    this._clearAlarmRunner();
+    this.effects.ring(panel.x, panel.y, Math.max(this.tilemap.pixelWidth, this.tilemap.pixelHeight), COLOR.alarm, 1.4);
+    for (const other of this.guards) other.alertTo(guard.lastKnown.x, guard.lastKnown.y);
+    this.emit('alarm');
+  }
+
+  _checkLasers() {
+    const { player } = this;
+    const carried = this.bodies.filter((body) => body.carried);
+    for (const laser of this.lasers) {
+      const active = laser.isActive(this.time);
+      const touching =
+        active &&
+        (laser.intersects(player.x, player.y, player.halfSize) ||
+          carried.some((body) => laser.intersects(body.x, body.y, 8)));
+      // Trip on entering the beam (or the beam switching on over you), not on every frame inside it.
+      if (touching && !laser.touching && laser.cooldown <= 0) this._tripLaser(laser);
+      laser.touching = touching;
+    }
+  }
+
+  _tripLaser(laser) {
+    const { player } = this;
+    laser.trip();
+    this.stats.lasersTripped++;
+    this.stats.detections++;
+    this.effects.ring(player.x, player.y, LASER_ALARM_RADIUS, COLOR.alarm, 1);
+    for (const guard of this.guards) {
+      if (Math.hypot(guard.x - player.x, guard.y - player.y) > LASER_ALARM_RADIUS) continue;
+      guard.alertTo(player.x, player.y);
     }
   }
 

@@ -91,7 +91,15 @@
   ],
   "cameras": [
     {"x": 40, "y": 2, "look": "S", "sweep": 120, "sweepTime": 3, "pause": 1},
-    {"x": 11, "y": 30, "look": "SE", "sweep": 60},
+    {"x": 11, "y": 30, "look": "SE", "sweep": 60, "panel": "B"},
     {"x": 29, "y": 13, "look": "N", "sweep": 0}
+  ],
+  "panels": [
+    {"x": 12, "y": 11, "id": "A"},
+    {"x": 8, "y": 30, "id": "B"}
+  ],
+  "lasers": [
+    {"x1": 27, "y1": 19, "x2": 27, "y2": 23, "period": 3, "onTime": 1.5, "panel": "A"},
+    {"x1": 30, "y1": 4, "x2": 36, "y2": 4}
   ]
 }

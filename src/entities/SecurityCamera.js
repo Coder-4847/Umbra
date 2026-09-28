@@ -68,6 +68,8 @@ export class SecurityCamera extends EventEmitter {
     this.lostTimer = 0;
     this.reportTimer = 0;
     this.time = 0;
+    // Set when the alarm panel this camera is wired to gets hacked.
+    this.disabled = false;
 
     this.coneView = new Graphics();
     this.view = this._buildView();
@@ -78,6 +80,11 @@ export class SecurityCamera extends EventEmitter {
   update(dt, ctx) {
     const { player } = ctx;
     this.time += dt;
+    if (this.disabled) {
+      this.canSeePlayer = false;
+      this._syncView();
+      return;
+    }
     const sawPlayer = this.canSeePlayer;
     this.canSeePlayer = this._canSeePlayer(player, sawPlayer);
 
@@ -235,6 +242,13 @@ export class SecurityCamera extends EventEmitter {
   _syncView() {
     this.view.position.set(this.x, this.y);
     this.housing.rotation = this.facing;
+
+    if (this.disabled) {
+      this.led.alpha = 0;
+      this.meterBar.clear();
+      this.coneView.clear();
+      return;
+    }
 
     if (this.state === CameraState.ALARM) {
       this.led.tint = COLOR.alarm;

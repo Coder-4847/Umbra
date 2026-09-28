@@ -71,6 +71,9 @@ function updateHud() {
     const count = s.total > 0 ? ` (${s.current}/${s.total})` : '';
     return `${mark} ${s.label}${count}`;
   });
+  if (level.fullAlarm) lines.push('⚠ ALARM RAISED');
+  else if (level.alarmRunner) lines.push('⚠ A guard is running for the alarm!');
+  if (!level.finished && !level.player.dragging && level.hackablePanel()) lines.push('E — disable alarm panel');
   const text = [levelData.name, ...lines].join('\n');
   if (text !== hudText) {
     hudText = text;

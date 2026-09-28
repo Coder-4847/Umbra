@@ -6,6 +6,7 @@ import { GridMap, TILE_SIZE } from '../world/tiles.js';
 import { raycast } from '../world/raycast.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
 import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
+import { distanceToSegment } from '../entities/securityRules.js';
 
 const DRAFT_KEY = 'umbra.editor.draft';
 const HISTORY_LIMIT = 200;
@@ -26,6 +27,8 @@ const TOOLS = [
   { id: 'birds', key: '9', label: 'Birds', char: 'b' },
   { id: 'guard', key: 'g', label: 'Guard' },
   { id: 'camera', key: 'c', label: 'Camera' },
+  { id: 'laser', key: 'l', label: 'Laser' },
+  { id: 'panel', key: 'p', label: 'Panel' },
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
@@ -44,6 +47,8 @@ const COLOR = {
   cone: 'rgba(255, 243, 176, 0.13)',
   coneFaint: 'rgba(255, 243, 176, 0.05)',
   camera: '#7dd3fc',
+  laser: '#ff4d4d',
+  panel: '#4ade80',
   cameraCone: 'rgba(125, 211, 252, 0.16)',
   cameraConeFaint: 'rgba(125, 211, 252, 0.06)',
 };
@@ -60,6 +65,8 @@ const TOOL_HINTS = {
   birds: 'Click to toggle a flock · the dashed ring is how close the player can walk before it flushes',
   guard: 'Click to place a guard, keep clicking to add waypoints · Esc or right-click to finish',
   camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
+  laser: 'Click one end, then the other, to string a tripwire · right-click cancels · set pulse timing and panel link in the panel',
+  panel: 'Click a floor tile to add an alarm panel, or click one to select and drag it · give it an id to wire lasers and cameras to it',
   select: 'Click a waypoint or camera to select, drag to move · Del removes it (Shift+Del removes the whole guard)',
 };
 
@@ -72,7 +79,7 @@ function blankDoc(cols = 40, rows = 28) {
     Array.from({ length: cols }, (_, x) => (x === 0 || y === 0 || x === cols - 1 || y === rows - 1 ? '#' : '.')),
   );
   tiles[2][2] = 'P';
-  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [] };
+  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [], panels: [], lasers: [] };
 }
 
 function docFromJson(json) {
@@ -91,6 +98,8 @@ function docFromJson(json) {
       ),
     })),
     cameras: (json.cameras ?? []).map((c) => ({ ...c })),
+    panels: (json.panels ?? []).map((p) => ({ ...p })),
+    lasers: (json.lasers ?? []).map((l) => ({ ...l })),
   };
 }
 
@@ -109,7 +118,16 @@ function jsonFromDoc(doc) {
       patrol: g.patrol.map(({ x, y, wait, look }) => ({ x, y, wait: wait || undefined, look: look ?? undefined })),
     })),
     cameras: doc.cameras.length
-      ? doc.cameras.map(({ x, y, look, sweep, sweepTime, pause }) => ({ x, y, look, sweep, sweepTime, pause }))
+      ? doc.cameras.map(({ x, y, look, sweep, sweepTime, pause, panel }) => ({
+          x, y, look, sweep, sweepTime, pause, panel: panel || undefined,
+        }))
+      : undefined,
+    panels: doc.panels.length ? doc.panels.map(({ x, y, id }) => ({ x, y, id: id || undefined })) : undefined,
+    lasers: doc.lasers.length
+      ? doc.lasers.map(({ x1, y1, x2, y2, period, onTime, offset, panel }) => ({
+          x1, y1, x2, y2, period: period || undefined, onTime: period ? onTime : undefined,
+          offset: offset || undefined, panel: panel || undefined,
+        }))
       : undefined,
   };
 }
@@ -118,8 +136,8 @@ const docText = (doc) => formatLevelJson(jsonFromDoc(doc));
 
 // --- state ---------------------------------------------------------------------
 
-/** At most one thing is selected: a guard (optionally one of its waypoints) or a camera. */
-const noSelection = () => ({ guard: -1, wp: -1, camera: -1 });
+/** At most one thing is selected: a guard (optionally one of its waypoints), a camera, a laser or a panel. */
+const noSelection = () => ({ guard: -1, wp: -1, camera: -1, laser: -1, panel: -1 });
 
 const state = {
   doc: blankDoc(),
@@ -198,6 +216,8 @@ function onDocChanged(structural = false) {
 function loadDoc(doc, savedText) {
   // Drafts autosaved before cameras existed have no cameras list.
   doc.cameras ??= [];
+  doc.panels ??= [];
+  doc.lasers ??= [];
   state.doc = doc;
   state.savedText = savedText;
   undoStack.length = 0;
@@ -242,10 +262,18 @@ function selectCamera(camera) {
   render();
 }
 
+function selectItem(kind, index) {
+  state.sel = { ...noSelection(), [kind]: index };
+  renderPanel();
+  render();
+}
+
 function clampSelection() {
-  if (state.sel.camera >= 0) {
-    if (!state.doc.cameras[state.sel.camera]) state.sel = noSelection();
-    return;
+  for (const [kind, list] of [['camera', 'cameras'], ['laser', 'lasers'], ['panel', 'panels']]) {
+    if (state.sel[kind] >= 0) {
+      if (!state.doc[list][state.sel[kind]]) state.sel = noSelection();
+      return;
+    }
   }
   const guard = state.doc.guards[state.sel.guard];
   if (!guard) state.sel = noSelection();
@@ -254,6 +282,26 @@ function clampSelection() {
 
 function findCamera(cell) {
   return state.doc.cameras.findIndex((c) => c.x === cell.x && c.y === cell.y);
+}
+
+function findPanel(cell) {
+  return state.doc.panels.findIndex((p) => p.x === cell.x && p.y === cell.y);
+}
+
+/** Index of a laser whose beam passes within half a tile of the cell's center, if any. */
+function findLaser(cell) {
+  return state.doc.lasers.findIndex(
+    (l) => distanceToSegment(cell.x + 0.5, cell.y + 0.5, l.x1 + 0.5, l.y1 + 0.5, l.x2 + 0.5, l.y2 + 0.5) <= 0.5,
+  );
+}
+
+function nextPanelId() {
+  const used = new Set(state.doc.panels.map((p) => p.id));
+  for (let i = 0; i < 26; i++) {
+    const id = String.fromCharCode(65 + i);
+    if (!used.has(id)) return id;
+  }
+  return `P${state.doc.panels.length + 1}`;
 }
 
 function findWaypoint(cell) {
@@ -267,9 +315,16 @@ function findWaypoint(cell) {
 }
 
 function deleteSelection(wholeGuard) {
-  if (state.sel.camera >= 0) {
+  const { doc, sel } = state;
+  if (sel.camera >= 0 || sel.laser >= 0 || sel.panel >= 0) {
     checkpoint();
-    state.doc.cameras.splice(state.sel.camera, 1);
+    if (sel.camera >= 0) doc.cameras.splice(sel.camera, 1);
+    if (sel.laser >= 0) doc.lasers.splice(sel.laser, 1);
+    if (sel.panel >= 0) {
+      const [removed] = doc.panels.splice(sel.panel, 1);
+      // Don't leave lasers and cameras wired to a panel that no longer exists.
+      for (const item of [...doc.lasers, ...doc.cameras]) if (item.panel === removed.id) delete item.panel;
+    }
     state.sel = noSelection();
     onDocChanged(true);
     return;
@@ -293,7 +348,8 @@ function deleteSelection(wholeGuard) {
 function setTool(id) {
   state.tool = id;
   for (const btn of toolsNav.querySelectorAll('button')) btn.classList.toggle('active', btn.dataset.tool === id);
-  if (id !== 'guard' && id !== 'camera' && id !== 'select') state.sel = noSelection();
+  state.laserStart = null;
+  if (!['guard', 'camera', 'laser', 'panel', 'select'].includes(id)) state.sel = noSelection();
   renderPanel();
   render();
   renderStatus();
@@ -386,15 +442,70 @@ function onPointerDown(e) {
     return;
   }
 
+  if (tool === 'panel') {
+    if (erase) {
+      select(-1, -1);
+      return;
+    }
+    if (!cell.inside) return;
+    const hit = findPanel(cell);
+    if (hit >= 0) {
+      selectItem('panel', hit);
+      state.drag = { mode: 'move-panel', checkpointed: false };
+      return;
+    }
+    checkpoint();
+    doc.panels.push({ x: cell.x, y: cell.y, id: nextPanelId() });
+    state.sel = { ...noSelection(), panel: doc.panels.length - 1 };
+    onDocChanged(true);
+    return;
+  }
+
+  if (tool === 'laser') {
+    if (erase) {
+      state.laserStart = null;
+      select(-1, -1);
+      return;
+    }
+    if (!cell.inside) return;
+    if (!state.laserStart) {
+      state.laserStart = { x: cell.x, y: cell.y };
+      render();
+      return;
+    }
+    const start = state.laserStart;
+    state.laserStart = null;
+    if (start.x === cell.x && start.y === cell.y) {
+      render();
+      return;
+    }
+    checkpoint();
+    doc.lasers.push({ x1: start.x, y1: start.y, x2: cell.x, y2: cell.y });
+    state.sel = { ...noSelection(), laser: doc.lasers.length - 1 };
+    onDocChanged(true);
+    return;
+  }
+
   if (tool === 'select') {
-    const hit = cell.inside ? findWaypoint(cell) : null;
-    const cameraHit = cell.inside && !hit ? findCamera(cell) : -1;
+    if (!cell.inside) {
+      select(-1, -1);
+      return;
+    }
+    const hit = findWaypoint(cell);
+    const cameraHit = hit ? -1 : findCamera(cell);
+    const panelHit = hit || cameraHit >= 0 ? -1 : findPanel(cell);
+    const laserHit = hit || cameraHit >= 0 || panelHit >= 0 ? -1 : findLaser(cell);
     if (hit) {
       select(hit.guard, hit.wp);
       state.drag = { mode: 'move', checkpointed: false };
     } else if (cameraHit >= 0) {
       selectCamera(cameraHit);
       state.drag = { mode: 'move-camera', checkpointed: false };
+    } else if (panelHit >= 0) {
+      selectItem('panel', panelHit);
+      state.drag = { mode: 'move-panel', checkpointed: false };
+    } else if (laserHit >= 0) {
+      selectItem('laser', laserHit);
     } else {
       select(-1, -1);
     }
@@ -445,11 +556,13 @@ function onPointerMove(e) {
       x: Math.min(Math.max(cell.x, 0), cols() - 1),
       y: Math.min(Math.max(cell.y, 0), rows() - 1),
     };
-  } else if ((drag?.mode === 'move' || drag?.mode === 'move-camera') && cell.inside) {
+  } else if (['move', 'move-camera', 'move-panel'].includes(drag?.mode) && cell.inside) {
     const item =
       drag.mode === 'move'
         ? state.doc.guards[state.sel.guard]?.patrol[state.sel.wp]
-        : state.doc.cameras[state.sel.camera];
+        : drag.mode === 'move-camera'
+          ? state.doc.cameras[state.sel.camera]
+          : state.doc.panels[state.sel.panel];
     if (item && (item.x !== cell.x || item.y !== cell.y)) {
       if (!drag.checkpointed) {
         checkpoint();
@@ -514,6 +627,7 @@ function onKeyDown(e) {
     spaceHeld = true;
     canvas.style.cursor = 'grab';
   } else if (e.key === 'Escape') {
+    state.laserStart = null;
     select(-1, -1);
   } else if (e.key === 'Delete' || e.key === 'Backspace') {
     e.preventDefault();
@@ -648,6 +762,7 @@ function render() {
 
   drawGuards(z);
   drawCameras(z);
+  drawSecurity(z);
 
   if (state.drag?.mode === 'rect') {
     const { start, end, ch } = state.drag;
@@ -811,6 +926,83 @@ function drawCameras(z) {
   });
 }
 
+/** Lasers (dashed when pulsing) and alarm panels, plus the in-progress laser from the Laser tool. */
+function drawSecurity(z) {
+  const center = (x, y) => [(x + 0.5) * z, (y + 0.5) * z];
+
+  state.doc.lasers.forEach((laser, li) => {
+    const selected = li === state.sel.laser;
+    const [ax, ay] = center(laser.x1, laser.y1);
+    const [bx, by] = center(laser.x2, laser.y2);
+    ctx.strokeStyle = COLOR.laser;
+    ctx.lineWidth = selected ? 3 : 2;
+    ctx.setLineDash(laser.period > 0 ? [6, 4] : []);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    for (const [ex, ey] of [[ax, ay], [bx, by]]) {
+      ctx.fillStyle = '#3a3f4c';
+      ctx.fillRect(ex - z * 0.2, ey - z * 0.2, z * 0.4, z * 0.4);
+      ctx.fillStyle = COLOR.laser;
+      ctx.fillRect(ex - z * 0.08, ey - z * 0.08, z * 0.16, z * 0.16);
+    }
+    if (laser.panel && z >= 12) {
+      ctx.fillStyle = COLOR.panel;
+      ctx.font = `${Math.round(z * 0.45)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(laser.panel, (ax + bx) / 2, (ay + by) / 2 - z * 0.45);
+    }
+    if (selected) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(Math.min(ax, bx) - z * 0.3, Math.min(ay, by) - z * 0.3, Math.abs(bx - ax) + z * 0.6, Math.abs(by - ay) + z * 0.6);
+    }
+  });
+
+  if (state.laserStart) {
+    const [ax, ay] = center(state.laserStart.x, state.laserStart.y);
+    ctx.fillStyle = COLOR.laser;
+    ctx.fillRect(ax - z * 0.2, ay - z * 0.2, z * 0.4, z * 0.4);
+    if (state.hover) {
+      const [bx, by] = center(state.hover.x, state.hover.y);
+      ctx.strokeStyle = COLOR.laser;
+      ctx.globalAlpha = 0.6;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  state.doc.panels.forEach((panel, pi) => {
+    const [cx, cy] = center(panel.x, panel.y);
+    ctx.fillStyle = '#2a2d38';
+    ctx.strokeStyle = COLOR.panel;
+    ctx.lineWidth = 1.5;
+    ctx.fillRect(cx - z * 0.28, cy - z * 0.36, z * 0.56, z * 0.72);
+    ctx.strokeRect(cx - z * 0.28, cy - z * 0.36, z * 0.56, z * 0.72);
+    ctx.fillStyle = COLOR.panel;
+    ctx.fillRect(cx - z * 0.18, cy - z * 0.26, z * 0.36, z * 0.24);
+    if (panel.id && z >= 10) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `bold ${Math.round(z * 0.4)}px system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(panel.id, cx, cy + z * 0.16);
+    }
+    if (pi === state.sel.panel) {
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(cx - z * 0.42, cy - z * 0.5, z * 0.84, z);
+    }
+  });
+}
+
 function renderStatus() {
   const hint = TOOL_HINTS[state.tool];
   if (!state.hover) {
@@ -836,10 +1028,46 @@ function lookOptions(look, allowNone = true) {
   return options.join('');
 }
 
+function panelOptions(selected) {
+  const ids = state.doc.panels.map((p) => p.id).filter(Boolean);
+  return ['<option value="">— none —</option>']
+    .concat(ids.map((id) => `<option value="${esc(id)}" ${id === selected ? 'selected' : ''}>${esc(id)}</option>`))
+    .join('');
+}
+
 function renderPanel() {
   const { doc, sel } = state;
   const guard = doc.guards[sel.guard];
   const camera = doc.cameras[sel.camera];
+  const laser = doc.lasers[sel.laser];
+  const alarmPanel = doc.panels[sel.panel];
+
+  const laserSection = laser
+    ? `<section>
+        <h2>Laser ${sel.laser + 1} <span style="font-weight:400;text-transform:none;letter-spacing:0">(${laser.x1},${laser.y1}) → (${laser.x2},${laser.y2})</span></h2>
+        <div class="row">
+          <label>Period (s) <input type="number" min="0" step="0.5" data-laser="period" value="${laser.period ?? ''}" placeholder="0 = always on"></label>
+          <label>On for (s) <input type="number" min="0" step="0.5" data-laser="onTime" value="${laser.onTime ?? ''}" ${laser.period > 0 ? '' : 'disabled'}></label>
+        </div>
+        <div class="row">
+          <label>Offset (s) <input type="number" min="0" step="0.25" data-laser="offset" value="${laser.offset ?? ''}" placeholder="0" ${laser.period > 0 ? '' : 'disabled'}></label>
+          <label>Wired to panel <select data-laser="panel">${panelOptions(laser.panel)}</select></label>
+        </div>
+        <button data-action="delete-laser" class="danger">Delete laser</button>
+      </section>`
+    : '';
+
+  const wired = alarmPanel?.id
+    ? [...doc.lasers, ...doc.cameras].filter((item) => item.panel === alarmPanel.id).length
+    : 0;
+  const panelSection = alarmPanel
+    ? `<section>
+        <h2>Alarm panel ${sel.panel + 1}</h2>
+        <label>Id <input data-panel-field="id" value="${esc(alarmPanel.id ?? '')}" placeholder="A"></label>
+        <span style="color:var(--muted)">Wired to ${wired} laser${wired === 1 ? '' : 's'}/camera${wired === 1 ? '' : 's'}. Guards run here to raise the alarm; the player can hack it.</span>
+        <button data-action="delete-panel" class="danger">Delete panel</button>
+      </section>`
+    : '';
 
   const cameraSection = camera
     ? `<section>
@@ -852,6 +1080,7 @@ function renderPanel() {
           <label>Pass time (s) <input type="number" min="0.5" step="0.5" data-cam="sweepTime" value="${camera.sweepTime ?? ''}" placeholder="3"></label>
           <label>End pause (s) <input type="number" min="0" step="0.5" data-cam="pause" value="${camera.pause ?? ''}" placeholder="1"></label>
         </div>
+        <label>Wired to panel <select data-cam="panel">${panelOptions(camera.panel)}</select></label>
         <button data-action="delete-camera" class="danger">Delete camera</button>
       </section>`
     : '';
@@ -911,6 +1140,8 @@ function renderPanel() {
     </section>
     ${guardSection}
     ${cameraSection}
+    ${laserSection}
+    ${panelSection}
     <section>
       <h2>Validation</h2>
       <div id="validation"></div>
@@ -918,7 +1149,7 @@ function renderPanel() {
     <section class="help">
       <h2>Shortcuts</h2>
       <dl>
-        <dt>1–9, G, C, V</dt><dd>Tools</dd>
+        <dt>1–9, G, C, L, P, V</dt><dd>Tools</dd>
         <dt>Shift+drag</dt><dd>Rectangle fill</dd>
         <dt>Right-drag</dt><dd>Erase to floor</dd>
         <dt>Space+drag / wheel</dt><dd>Pan / zoom</dd>
@@ -981,8 +1212,33 @@ function onPanelChange(e) {
     const camera = doc.cameras[state.sel.camera];
     const field = el.dataset.cam;
     if (field === 'look') camera.look = Number.isNaN(Number(el.value)) ? el.value : Number(el.value);
+    else if (field === 'panel') camera.panel = el.value || undefined;
     else camera[field] = el.value === '' ? undefined : Math.max(0, Number(el.value));
     onDocChanged();
+  } else if (el.dataset.laser) {
+    checkpoint();
+    const laser = doc.lasers[state.sel.laser];
+    const field = el.dataset.laser;
+    if (field === 'panel') {
+      laser.panel = el.value || undefined;
+    } else {
+      laser[field] = el.value === '' ? undefined : Math.max(0, Number(el.value));
+      // A freshly pulsing laser needs an on-time to be valid; default to half the period.
+      if (field === 'period' && laser.period > 0 && !(laser.onTime > 0 && laser.onTime < laser.period)) {
+        laser.onTime = laser.period / 2;
+      }
+    }
+    // Period toggles whether the timing inputs are enabled.
+    onDocChanged(field === 'period');
+  } else if (el.dataset.panelField) {
+    checkpoint();
+    const alarmPanel = doc.panels[state.sel.panel];
+    const oldId = alarmPanel.id;
+    const newId = el.value.trim() || undefined;
+    alarmPanel.id = newId;
+    // Keep wiring intact when a panel is renamed.
+    for (const item of [...doc.lasers, ...doc.cameras]) if (oldId && item.panel === oldId) item.panel = newId;
+    onDocChanged(true);
   }
 }
 
@@ -1010,7 +1266,7 @@ function onPanelClick(e) {
     deleteSelection(false);
     return;
   }
-  if (action === 'delete-guard' || action === 'delete-camera') {
+  if (['delete-guard', 'delete-camera', 'delete-laser', 'delete-panel'].includes(action)) {
     deleteSelection(true);
     return;
   }

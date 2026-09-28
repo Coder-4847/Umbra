@@ -16,7 +16,11 @@
  *       "patrol": [{ "x": 2, "y": 1, "wait": 1.5, "look": "S" }, [4, 1]] }
  *   ],
  *   "cameras": [
- *     { "x": 5, "y": 1, "look": "S", "sweep": 90, "sweepTime": 3, "pause": 1 }
+ *     { "x": 5, "y": 1, "look": "S", "sweep": 90, "sweepTime": 3, "pause": 1, "panel": "A" }
+ *   ],
+ *   "panels": [{ "x": 1, "y": 1, "id": "A" }],
+ *   "lasers": [
+ *     { "x1": 3, "y1": 1, "x2": 3, "y2": 4, "period": 3, "onTime": 1.5, "offset": 0, "panel": "A" }
  *   ]
  * }
  *
@@ -28,6 +32,12 @@
  * `sweepTime` seconds per pass (default 3), `pause` seconds held at each end (default 1).
  * Birds ("b" in tiles) are a resting flock on a floor tile: walking right past them
  * or making noise near them flushes them, and guards come to check the spot.
+ * Alarm panels sit on a floor tile. A guard who spots the player may run to one to
+ * raise a full alarm; the player can hack one (E) to disable it along with every
+ * laser and camera whose `panel` names its `id`.
+ * Lasers are tripwire beams between two tile centers (x1,y1)-(x2,y2) that must have
+ * a clear line between them. `period` > 0 makes one pulse: on for `onTime` seconds
+ * of every `period`, shifted by `offset`; period 0 (default) means always on.
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
@@ -37,6 +47,7 @@ import { findPath } from '../world/pathfinding.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { angleDiff } from '../core/math.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
+import { distanceToSegment, laserActiveAt } from '../entities/securityRules.js';
 
 export const FORMAT_VERSION = 1;
 
@@ -106,7 +117,10 @@ function readLevel(json, errors) {
   if (!tiles) return null;
   const map = new GridMap(tiles.cols, tiles.rows, tiles.grid);
   const guards = readGuards(json.guards ?? [], map, errors);
-  const cameras = readCameras(json.cameras ?? [], map, errors);
+  const panels = readPanels(json.panels ?? [], map, errors);
+  const panelIds = new Set(panels.map((p) => p.id).filter(Boolean));
+  const cameras = readCameras(json.cameras ?? [], map, panelIds, errors);
+  const lasers = readLasers(json.lasers ?? [], map, panelIds, errors);
   const objectives = readObjectives(json.objectives, tiles, guards, errors);
 
   return {
@@ -118,10 +132,78 @@ function readLevel(json, errors) {
     ...tiles,
     guards,
     cameras,
+    panels,
+    lasers,
   };
 }
 
-function readCameras(list, map, errors) {
+function readPanelLink(value, label, panelIds, errors) {
+  if (value == null) return null;
+  if (typeof value !== 'string' || !panelIds.has(value)) {
+    errors.push(`${label}: "panel" must be the id of an alarm panel in this level`);
+    return null;
+  }
+  return value;
+}
+
+function readPanels(list, map, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"panels" must be an array');
+    return [];
+  }
+  const panels = [];
+  const seen = new Set();
+  list.forEach((panel, pi) => {
+    const label = `Panel ${pi + 1}`;
+    const { x, y } = panel ?? {};
+    if (!Number.isInteger(x) || !Number.isInteger(y)) {
+      errors.push(`${label}: x and y must be whole tile coordinates`);
+      return;
+    }
+    if (map.isSolid(x, y)) errors.push(`${label} at (${x},${y}) must be on a floor tile`);
+    const id = panel.id ?? null;
+    if (id !== null && (typeof id !== 'string' || id === '')) errors.push(`${label}: id must be a non-empty string`);
+    else if (id !== null && seen.has(id)) errors.push(`${label}: id "${id}" is used by another panel`);
+    if (id) seen.add(id);
+    panels.push({ ...tileCenter(x, y), tx: x, ty: y, id });
+  });
+  return panels;
+}
+
+function readLasers(list, map, panelIds, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"lasers" must be an array');
+    return [];
+  }
+  const lasers = [];
+  list.forEach((laser, li) => {
+    const label = `Laser ${li + 1}`;
+    const { x1, y1, x2, y2 } = laser ?? {};
+    if (![x1, y1, x2, y2].every(Number.isInteger)) {
+      errors.push(`${label}: x1, y1, x2, y2 must be whole tile coordinates`);
+      return;
+    }
+    if (map.isSolid(x1, y1) || map.isSolid(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
+    if (x1 === x2 && y1 === y2) errors.push(`${label}: its two ends must be different tiles`);
+    const a = tileCenter(x1, y1);
+    const b = tileCenter(x2, y2);
+    if (!hasLineOfSight(map, a.x, a.y, b.x, b.y)) errors.push(`${label}: the beam from (${x1},${y1}) to (${x2},${y2}) passes through a wall`);
+
+    const period = laser.period ?? 0;
+    const onTime = laser.onTime ?? 0;
+    const offset = laser.offset ?? 0;
+    if (typeof period !== 'number' || period < 0) errors.push(`${label}: period must be seconds >= 0`);
+    else if (period > 0 && !(typeof onTime === 'number' && onTime > 0 && onTime < period)) {
+      errors.push(`${label}: onTime must be more than 0 and less than period`);
+    }
+    if (typeof offset !== 'number' || offset < 0) errors.push(`${label}: offset must be seconds >= 0`);
+    const panel = readPanelLink(laser.panel, label, panelIds, errors);
+    lasers.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y, tx1: x1, ty1: y1, tx2: x2, ty2: y2, period, onTime, offset, panel });
+  });
+  return lasers;
+}
+
+function readCameras(list, map, panelIds, errors) {
   if (!Array.isArray(list)) {
     errors.push('"cameras" must be an array');
     return [];
@@ -150,8 +232,9 @@ function readCameras(list, map, errors) {
     if (typeof sweep !== 'number' || sweep < 0 || sweep > 360) errors.push(`${label}: sweep must be 0–360 degrees`);
     if (typeof sweepTime !== 'number' || sweepTime <= 0) errors.push(`${label}: sweepTime must be a positive number of seconds`);
     if (typeof pause !== 'number' || pause < 0) errors.push(`${label}: pause must be seconds >= 0`);
+    const panel = readPanelLink(camera.panel, label, panelIds, errors);
     if (look === null) return;
-    cameras.push({ ...tileCenter(x, y), tx: x, ty: y, look, sweep: (sweep * Math.PI) / 180, sweepTime, pause });
+    cameras.push({ ...tileCenter(x, y), tx: x, ty: y, look, sweep: (sweep * Math.PI) / 180, sweepTime, pause, panel });
   });
   return cameras;
 }
@@ -320,6 +403,14 @@ function checkPlayability(level, errors, warnings) {
       warnings.push(`Camera ${ci + 1}'s sweep covers the player spawn`);
     }
   });
+
+  level.lasers.forEach((laser, li) => {
+    const onSpawn = distanceToSegment(spawn.x, spawn.y, laser.x1, laser.y1, laser.x2, laser.y2) <= BODY_HALF_SIZE;
+    if (onSpawn && laserActiveAt(laser, 0)) errors.push(`Laser ${li + 1} passes over the player spawn and is on at the start`);
+  });
+  for (const panel of level.panels) {
+    if (!reachable(panel)) warnings.push(`Panel at (${panel.tx},${panel.ty}) can't be reached, so the player can never hack it`);
+  }
 
   for (const flock of level.wildlife) {
     if (Math.hypot(flock.x - spawn.x, flock.y - spawn.y) <= BIRD_PROXIMITY * 1.5) {

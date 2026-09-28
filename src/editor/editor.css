@@ -118,6 +118,7 @@ input {
   flex-direction: column;
   gap: 4px;
   padding: 8px;
+  overflow-y: auto;
   background: var(--surface);
   border-right: 1px solid var(--border);
 }

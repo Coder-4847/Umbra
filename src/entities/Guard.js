@@ -50,6 +50,10 @@ const AIM_TIME = 0.6;
 const FIRE_COOLDOWN = 0.9;
 const AIM_TOLERANCE = (12 * Math.PI) / 180;
 
+// Seconds a guard spends at a panel before the alarm goes off: the player's last chance.
+const PANEL_PRESS_TIME = 1;
+const PANEL_PRESS_REACH = 40;
+
 const CONE_COLORS = { patrol: 0xfff3b0, suspicious: 0xffa53d, alert: 0xff4545 };
 const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
 
@@ -64,7 +68,8 @@ const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
  * guard that stands still and turns. `route` is 'loop' or 'pingpong'.
  * `target` marks a guard for the eliminate-targets objective.
  *
- * Events: 'alert' (guard) when it first actually sees the player during an alert,
+ * Events: 'raiseAlarm' (guard, panel) when it finishes an alarm run,
+ * 'alert' (guard) when it first actually sees the player during an alert,
  * 'shoot' (guard) when it fires, 'bodyFound' (guard, body).
  */
 export class Guard extends EventEmitter {
@@ -102,6 +107,8 @@ export class Guard extends EventEmitter {
     this.aimTarget = null;
     this.confirmedSighting = false;
 
+    this.alarmRun = null;
+
     this.tracks = null;
     // Time of the newest print this guard has already followed; older prints no longer interest it.
     this.trailTime = -Infinity;
@@ -132,7 +139,8 @@ export class Guard extends EventEmitter {
   alertTo(x, y) {
     if (this.dead) return;
     if (this.state === GuardState.ALERT) {
-      if (this.canSeePlayer) return;
+      // A guard running for the alarm is committed; reports don't turn it around.
+      if (this.canSeePlayer || this.alarmRun) return;
       this.lastKnown = { x, y };
       this.lostTimer = PURSUIT_INTUITION_TIME;
       this.repathTimer = REPATH_INTERVAL;
@@ -157,6 +165,37 @@ export class Guard extends EventEmitter {
 
   kill() {
     this.dead = true;
+  }
+
+  /** Breaks off the chase to run to an alarm panel and raise the alarm there. */
+  runToPanel(panel) {
+    this.alarmRun = { panel, pressTimer: 0 };
+    this.aimTimer = 0;
+    this.aimTarget = null;
+    this._setDestination(panel.x, panel.y);
+  }
+
+  /** Returns true while the run is still in progress (it may have ended this frame). */
+  _updateAlarmRun(dt, player) {
+    const run = this.alarmRun;
+    const { panel } = run;
+    const distToPanel = Math.hypot(panel.x - this.x, panel.y - this.y);
+    if (!panel.working || (this.path.length === 0 && distToPanel > PANEL_PRESS_REACH)) {
+      this.alarmRun = null;
+      return false;
+    }
+    if (this.canSeePlayer) {
+      this.lostTimer = 0;
+      this.lastKnown = { x: player.x, y: player.y };
+    }
+    if (this._followPath(dt, SPEED.alert, true)) {
+      run.pressTimer += dt;
+      if (run.pressTimer >= PANEL_PRESS_TIME) {
+        this.alarmRun = null;
+        this.emit('raiseAlarm', this, panel);
+      }
+    }
+    return true;
   }
 
   /** @param ctx {{ player, bodies, tracks? }} */
@@ -384,12 +423,15 @@ export class Guard extends EventEmitter {
 
   _updateAlert(dt, player, sawPlayerLastFrame) {
     this.repathTimer -= dt;
+    if (this.alarmRun && this._updateAlarmRun(dt, player)) return;
 
     if (this.canSeePlayer) {
       // A guard alerted second-hand (noise, radio) calls it in once it actually sees the player.
       if (!this.confirmedSighting) {
         this.confirmedSighting = true;
         this.emit('alert', this);
+        // The level may have just sent this guard to raise the alarm; don't overwrite that route.
+        if (this.alarmRun) return;
       }
       this.lostTimer = 0;
       this.lastKnown = { x: player.x, y: player.y };
@@ -535,9 +577,13 @@ export class Guard extends EventEmitter {
     this.view.position.set(this.x, this.y);
     this.body.rotation = this.facing;
 
-    if (this._indicatorState !== this.state) {
-      this._indicatorState = this.state;
-      if (this.state === GuardState.ALERT) {
+    const indicatorState = this.alarmRun ? 'alarmRun' : this.state;
+    if (this._indicatorState !== indicatorState) {
+      this._indicatorState = indicatorState;
+      if (this.alarmRun) {
+        this.indicator.text = '!!';
+        this.indicator.style.fill = CONE_COLORS.alert;
+      } else if (this.state === GuardState.ALERT) {
         this.indicator.text = '!';
         this.indicator.style.fill = CONE_COLORS.alert;
       } else if (this.state === GuardState.SUSPICIOUS) {
@@ -584,6 +630,21 @@ export class Guard extends EventEmitter {
         .moveTo(this.x, this.y)
         .lineTo(this.aimTarget.x, this.aimTarget.y)
         .stroke({ width: 1 + progress * 1.5, color: CONE_COLORS.alert, alpha: 0.25 + progress * 0.65 });
+    }
+
+    // Alarm-run telegraph: a dashed line to the panel so the player knows who to stop.
+    if (this.alarmRun) {
+      const { panel } = this.alarmRun;
+      const dx = panel.x - this.x;
+      const dy = panel.y - this.y;
+      const length = Math.hypot(dx, dy);
+      for (let d = 0; d < length; d += 14) {
+        const end = Math.min(length, d + 7);
+        this.coneView
+          .moveTo(this.x + (dx * d) / length, this.y + (dy * d) / length)
+          .lineTo(this.x + (dx * end) / length, this.y + (dy * end) / length)
+          .stroke({ width: 2, color: CONE_COLORS.alert, alpha: 0.7 });
+      }
     }
   }
 }

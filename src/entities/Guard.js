@@ -50,6 +50,10 @@ const LOSE_TARGET_TIME = 4;
 const PURSUIT_INTUITION_TIME = 0.6;
 const REPATH_INTERVAL = 0.3;
 const ARRIVE_DIST = 4;
+// Guards and dogs wade through shallow water at this fraction of their speed.
+const SHALLOW_SPEED_FACTOR = 0.7;
+// Stopping this far short of the point being checked (it's across water, say) means look toward it.
+const UNREACHED_DIST = 48;
 
 const SHOOT_RANGE = 220;
 const AIM_TIME = 0.6;
@@ -415,7 +419,9 @@ export class Guard extends EventEmitter {
         }
         this.searching = true;
         this.searchTimer = SEARCH_DURATION;
-        this.searchBaseAngle = this.facing;
+        const { x, y } = this.lastKnown;
+        this.searchBaseAngle =
+          Math.hypot(x - this.x, y - this.y) > UNREACHED_DIST ? Math.atan2(y - this.y, x - this.x) : this.facing;
       }
       return;
     }
@@ -498,14 +504,16 @@ export class Guard extends EventEmitter {
 
   // --- movement -------------------------------------------------------------
 
+  /** Paths to the point, or as near as it can get when the point can't be reached (across water). */
   _setDestination(x, y) {
-    this.path = findPath(this.tilemap, this.x, this.y, x, y, HALF_SIZE) ?? [];
+    this.path = findPath(this.tilemap, this.x, this.y, x, y, HALF_SIZE, { closest: true }) ?? [];
     this.pathIndex = 0;
   }
 
   /** Advances along the current path. Returns true once the path is complete. */
   _followPath(dt, speed, faceMovement) {
-    let budget = speed * dt;
+    const wading = this.tilemap.isShallowAtWorld(this.x, this.y);
+    let budget = speed * dt * (wading ? SHALLOW_SPEED_FACTOR : 1);
     while (this.pathIndex < this.path.length) {
       const target = this.path[this.pathIndex];
       // Reached a stairs/elevator pad (the previous point): step through to the other end.

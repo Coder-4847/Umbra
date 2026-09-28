@@ -21,7 +21,7 @@ function resolveAxis(body, axis, tilemap) {
 
   for (let ty = minTileY; ty <= maxTileY; ty++) {
     for (let tx = minTileX; tx <= maxTileX; tx++) {
-      if (!tilemap.isSolid(tx, ty)) continue;
+      if (!tilemap.isBlocked(tx, ty)) continue;
 
       const tileLeft = tx * TILE_SIZE;
       const tileTop = ty * TILE_SIZE;
@@ -38,12 +38,12 @@ function resolveAxis(body, axis, tilemap) {
   }
 }
 
-/** True if a box of the given half-size centered at (x, y) overlaps no solid tile. Assumes half < TILE_SIZE. */
+/** True if a box of the given half-size centered at (x, y) overlaps no blocked tile. Assumes half < TILE_SIZE. */
 export function isBoxClear(tilemap, x, y, half) {
   return (
-    !tilemap.isSolidAtWorld(x - half, y - half) &&
-    !tilemap.isSolidAtWorld(x + half, y - half) &&
-    !tilemap.isSolidAtWorld(x - half, y + half) &&
-    !tilemap.isSolidAtWorld(x + half, y + half)
+    !tilemap.isBlockedAtWorld(x - half, y - half) &&
+    !tilemap.isBlockedAtWorld(x + half, y - half) &&
+    !tilemap.isBlockedAtWorld(x - half, y + half) &&
+    !tilemap.isBlockedAtWorld(x + half, y + half)
   );
 }

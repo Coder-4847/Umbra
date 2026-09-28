@@ -76,6 +76,19 @@ export class SecurityCamera extends EventEmitter {
     this._syncView();
   }
 
+  // Overridden by PatrolBoat's searchlight.
+  get range() {
+    return CAMERA_RANGE;
+  }
+
+  get fov() {
+    return CAMERA_FOV;
+  }
+
+  get idleColor() {
+    return COLOR.idle;
+  }
+
   /** @param ctx {{ player, bodies }} */
   update(dt, ctx) {
     const { player } = ctx;
@@ -101,7 +114,7 @@ export class SecurityCamera extends EventEmitter {
     this._checkBodies(ctx.bodies);
 
     if (this.canSeePlayer) {
-      const t = clamp(this.playerDist / CAMERA_RANGE, 0, 1);
+      const t = clamp(this.playerDist / this.range, 0, 1);
       const fillTime = DETECT_TIME_NEAR + (DETECT_TIME_FAR - DETECT_TIME_NEAR) * t;
       this.meter = Math.min(1, this.meter + dt / fillTime);
       this._track(player, dt);
@@ -189,7 +202,7 @@ export class SecurityCamera extends EventEmitter {
   _canSeePlayer(player, sawLastFrame) {
     this.playerDist = Math.hypot(player.x - this.x, player.y - this.y);
     if (player.dead || player.inTransit) return false;
-    const range = player.isHidden && !sawLastFrame ? HIDDEN_DETECT_RANGE : CAMERA_RANGE;
+    const range = player.isHidden && !sawLastFrame ? HIDDEN_DETECT_RANGE : this.range;
     return this._canSeePoint(player.x, player.y, range + player.halfSize);
   }
 
@@ -197,14 +210,14 @@ export class SecurityCamera extends EventEmitter {
     const dx = x - this.x;
     const dy = y - this.y;
     if (dx * dx + dy * dy > range * range) return false;
-    if (Math.abs(angleDiff(Math.atan2(dy, dx), this.facing)) > CAMERA_FOV / 2) return false;
+    if (Math.abs(angleDiff(Math.atan2(dy, dx), this.facing)) > this.fov / 2) return false;
     return hasLineOfSight(this.tilemap, this.x, this.y, x, y);
   }
 
   _checkBodies(bodies) {
     for (const body of bodies) {
       if (body.discovered || body.concealed) continue;
-      if (!this._canSeePoint(body.x, body.y, CAMERA_RANGE)) continue;
+      if (!this._canSeePoint(body.x, body.y, this.range)) continue;
       body.discovered = true;
       this.emit('bodyFound', this, body);
       return;
@@ -236,7 +249,7 @@ export class SecurityCamera extends EventEmitter {
   }
 
   _coneColor() {
-    return this.state === CameraState.ALARM ? COLOR.alarm : lerpColor(COLOR.idle, COLOR.alarm, this.meter);
+    return this.state === CameraState.ALARM ? COLOR.alarm : lerpColor(this.idleColor, COLOR.alarm, this.meter);
   }
 
   _syncView() {
@@ -275,12 +288,13 @@ export class SecurityCamera extends EventEmitter {
 
   _drawCone() {
     const points = [this.x, this.y];
-    const start = this.facing - CAMERA_FOV / 2;
+    const { fov, range } = this;
+    const start = this.facing - fov / 2;
     for (let i = 0; i <= CONE_RAYS; i++) {
-      const angle = start + (CAMERA_FOV * i) / CONE_RAYS;
+      const angle = start + (fov * i) / CONE_RAYS;
       const dirX = Math.cos(angle);
       const dirY = Math.sin(angle);
-      const dist = raycast(this.tilemap, this.x, this.y, dirX, dirY, CAMERA_RANGE);
+      const dist = raycast(this.tilemap, this.x, this.y, dirX, dirY, range);
       points.push(this.x + dirX * dist, this.y + dirY * dist);
     }
     const color = this._coneColor();

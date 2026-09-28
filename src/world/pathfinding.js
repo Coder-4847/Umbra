@@ -20,8 +20,10 @@ const LINK_COST = 4;
  * paths may use them; the point reached through a link is flagged
  * `teleport: true`, meaning "jump here from the previous point".
  * Returns an array of world-space points ending exactly at the goal, or null.
+ * With `closest`, an unreachable goal (across deep water, say) gives a path to
+ * the reachable tile nearest to it instead; null only if that's the start.
  */
-export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
+export function findPath(tilemap, sx, sy, gx, gy, halfSize, { closest = false } = {}) {
   const { links } = tilemap;
   const { cols } = tilemap;
   const startX = Math.floor(sx / TILE_SIZE);
@@ -29,7 +31,7 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
   const goalX = Math.floor(gx / TILE_SIZE);
   const goalY = Math.floor(gy / TILE_SIZE);
 
-  if (tilemap.isSolid(goalX, goalY)) return null;
+  if (tilemap.isBlocked(goalX, goalY) && !closest) return null;
   if (startX === goalX && startY === goalY) return [{ x: gx, y: gy }];
 
   const size = cols * tilemap.rows;
@@ -42,6 +44,8 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
 
   gScore[start] = 0;
   open.push(start, octile(startX, startY, goalX, goalY));
+  let nearest = start;
+  let nearestH = octile(startX, startY, goalX, goalY);
 
   let current;
   while (open.size > 0) {
@@ -52,11 +56,16 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
 
     const cx = current % cols;
     const cy = (current - cx) / cols;
+    const h = octile(cx, cy, goalX, goalY);
+    if (h < nearestH) {
+      nearestH = h;
+      nearest = current;
+    }
     for (const [dx, dy, cost] of DIRS) {
       const nx = cx + dx;
       const ny = cy + dy;
-      if (tilemap.isSolid(nx, ny)) continue;
-      if (dx !== 0 && dy !== 0 && (tilemap.isSolid(cx + dx, cy) || tilemap.isSolid(cx, cy + dy))) continue;
+      if (tilemap.isBlocked(nx, ny)) continue;
+      if (dx !== 0 && dy !== 0 && (tilemap.isBlocked(cx + dx, cy) || tilemap.isBlocked(cx, cy + dy))) continue;
 
       relax(ny * cols + nx, cost, nx, ny);
     }
@@ -77,10 +86,17 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
     }
   }
 
-  if (parent[goal] === -1) return null;
+  let end = goal;
+  let endPoint = { x: gx, y: gy };
+  if (parent[goal] === -1) {
+    if (!closest || nearest === start) return null;
+    end = nearest;
+    const nx = nearest % cols;
+    endPoint = { x: (nx + 0.5) * TILE_SIZE, y: ((nearest - nx) / cols + 0.5) * TILE_SIZE };
+  }
 
   const tiles = [];
-  for (let node = goal; node !== start; node = parent[node]) tiles.push(node);
+  for (let node = end; node !== start; node = parent[node]) tiles.push(node);
   tiles.reverse();
 
   let previous = start;
@@ -96,7 +112,7 @@ export function findPath(tilemap, sx, sy, gx, gy, halfSize) {
     return point;
   });
   const last = points[points.length - 1];
-  points[points.length - 1] = { x: gx, y: gy, teleport: last.teleport };
+  points[points.length - 1] = { ...endPoint, teleport: last.teleport };
 
   return smoothPath(tilemap, { x: sx, y: sy }, points, halfSize + CLEARANCE_MARGIN);
 }

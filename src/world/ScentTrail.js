@@ -9,11 +9,13 @@ const ALPHA = 0.3;
 
 /**
  * The player's scent, left everywhere they walk (floor, bushes, shadows) in
- * levels with dogs. Kept in time order so dogs can scan newest-first and follow
- * the trail forward. Each mark: { x, y, time }.
+ * levels with dogs, except in water, which washes it away: wading breaks the
+ * trail. Kept in time order so dogs can scan newest-first and follow the trail
+ * forward. Each mark: { x, y, time }.
  */
 export class ScentTrail {
-  constructor() {
+  constructor(tilemap) {
+    this.tilemap = tilemap;
     this.marks = [];
     this.now = 0;
     this.view = new Graphics();
@@ -40,6 +42,7 @@ export class ScentTrail {
       if (dx * dx + dy * dy < MARK_SPACING * MARK_SPACING) return;
     }
     this._last = { x: player.x, y: player.y };
+    if (this.tilemap.isShallowAtWorld(player.x, player.y)) return;
     this.marks.push({ x: player.x, y: player.y, time: this.now });
   }
 

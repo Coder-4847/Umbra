@@ -6,6 +6,7 @@ import { GridMap, TILE_SIZE } from '../world/tiles.js';
 import { raycast } from '../world/raycast.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
 import { DOG_SCENT_RADIUS, DOG_VISION_FOV, DOG_VISION_RANGE } from '../entities/dogRules.js';
+import { BOAT_DEFAULT_SWEEP, BOAT_DEFAULT_SWEEP_TIME, BOAT_LIGHT_FOV, BOAT_LIGHT_RANGE } from '../entities/boatRules.js';
 import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 import { distanceToSegment } from '../entities/securityRules.js';
 
@@ -26,8 +27,11 @@ const TOOLS = [
   { id: 'intel', key: '7', label: 'Intel', char: 'i' },
   { id: 'snow', key: '8', label: 'Snow', char: '*' },
   { id: 'birds', key: '9', label: 'Birds', char: 'b' },
+  { id: 'water', key: 'w', label: 'Water', char: '~' },
+  { id: 'shallow', key: 'h', label: 'Shallows', char: ',' },
   { id: 'guard', key: 'g', label: 'Guard' },
   { id: 'dog', key: 'd', label: 'Dog' },
+  { id: 'boat', key: 'b', label: 'Boat' },
   { id: 'camera', key: 'c', label: 'Camera' },
   { id: 'laser', key: 'l', label: 'Laser' },
   { id: 'panel', key: 'p', label: 'Panel' },
@@ -35,14 +39,27 @@ const TOOLS = [
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
-const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow', 'snow']);
+const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow', 'snow', 'water', 'shallow']);
+// Tools that place a patrolling unit; the tool id is the unit's kind.
+const UNIT_TOOLS = new Set(['guard', 'dog', 'boat']);
 const TOGGLE_MARKERS = { exit: 'E', intel: 'i', birds: 'b' };
 
-const TILE_COLORS = { '#': '#3b3a48', '.': '#1d1d27', '%': '#24422f', ':': '#0a0a0f', '*': '#6c7788' };
+const TILE_COLORS = {
+  '#': '#3b3a48',
+  '.': '#1d1d27',
+  '%': '#24422f',
+  ':': '#0a0a0f',
+  '*': '#6c7788',
+  '~': '#0f2a40',
+  ',': '#1d4a5a',
+};
 const COLOR = {
   guard: '#5b8def',
   target: '#e5625e',
   dog: '#c08552',
+  boat: '#c9d1dc',
+  boatLight: 'rgba(230, 240, 255, 0.16)',
+  boatLightFaint: 'rgba(230, 240, 255, 0.06)',
   scent: 'rgba(155, 225, 93, 0.10)',
   scentEdge: 'rgba(155, 225, 93, 0.45)',
   spawn: '#4ade80',
@@ -72,6 +89,9 @@ const TOOL_HINTS = {
   birds: 'Click to toggle a flock · the dashed ring is how close the player can walk before it flushes',
   guard: 'Click to place a guard, keep clicking to add waypoints · Esc or right-click to finish',
   dog: 'Click to place a patrol dog, keep clicking to add waypoints · the green ring is how close it smells the player, even in cover',
+  water: 'Deep water: nobody walks on it, but sight, sound and shots cross it · bodies dragged to its edge can be sunk · Shift+drag for a rectangle',
+  shallow: 'Shallow water: walkable but slow and splashy (noisy), and it washes off scent · Shift+drag for a rectangle',
+  boat: 'Click deep water to place a patrol boat, keep clicking to add waypoints (legs must stay over water) · the pale wedge is everywhere its searchlight can swing',
   camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
   laser: 'Click one end, then the other, to string a tripwire · right-click cancels · set pulse timing and panel link in the panel',
   panel: 'Click a floor tile to add an alarm panel, or click one to select and drag it · give it an id to wire lasers and cameras to it',
@@ -100,7 +120,9 @@ function docFromJson(json) {
     objectives: Array.isArray(json.objectives) ? [...json.objectives] : [],
     tiles: (json.tiles ?? []).map((row) => [...row]),
     guards: (json.guards ?? []).map((g) => ({
-      kind: g.kind === 'dog' ? 'dog' : undefined,
+      kind: g.kind === 'dog' || g.kind === 'boat' ? g.kind : undefined,
+      sweep: g.sweep,
+      sweepTime: g.sweepTime,
       route: g.route ?? 'loop',
       target: g.target === true,
       radio: g.radio,
@@ -125,8 +147,10 @@ function jsonFromDoc(doc) {
     objectives: doc.objectives,
     tiles: doc.tiles.map((row) => row.join('')),
     guards: doc.guards.map((g) => ({
-      kind: g.kind === 'dog' ? 'dog' : undefined,
+      kind: g.kind === 'dog' || g.kind === 'boat' ? g.kind : undefined,
       route: g.route,
+      sweep: g.kind === 'boat' ? g.sweep : undefined,
+      sweepTime: g.kind === 'boat' ? g.sweepTime : undefined,
       target: g.target || undefined,
       radio: g.radio || undefined,
       patrol: g.patrol.map(({ x, y, wait, look }) => ({ x, y, wait: wait || undefined, look: look ?? undefined })),
@@ -381,7 +405,7 @@ function setTool(id) {
   for (const btn of toolsNav.querySelectorAll('button')) btn.classList.toggle('active', btn.dataset.tool === id);
   state.laserStart = null;
   state.linkStart = null;
-  if (!['guard', 'dog', 'camera', 'laser', 'panel', 'link', 'select'].includes(id)) state.sel = noSelection();
+  if (!['guard', 'dog', 'boat', 'camera', 'laser', 'panel', 'link', 'select'].includes(id)) state.sel = noSelection();
   renderPanel();
   render();
   renderStatus();
@@ -433,7 +457,7 @@ function onPointerDown(e) {
   const erase = e.button === 2;
   const { tool, doc } = state;
 
-  if (tool === 'guard' || tool === 'dog') {
+  if (UNIT_TOOLS.has(tool)) {
     if (erase) {
       select(-1, -1);
       return;
@@ -441,7 +465,7 @@ function onPointerDown(e) {
     if (!cell.inside) return;
     const current = doc.guards[state.sel.guard];
     // Keep extending the selected route only with the matching tool; otherwise place a new one.
-    if (current && (current.kind === 'dog') === (tool === 'dog')) {
+    if (current && (current.kind ?? 'guard') === tool) {
       const last = current.patrol.at(-1);
       if (last.x === cell.x && last.y === cell.y) return;
       checkpoint();
@@ -450,7 +474,7 @@ function onPointerDown(e) {
     } else {
       checkpoint();
       doc.guards.push({
-        kind: tool === 'dog' ? 'dog' : undefined,
+        kind: tool === 'guard' ? undefined : tool,
         route: 'loop',
         target: false,
         patrol: [{ x: cell.x, y: cell.y }],
@@ -874,9 +898,14 @@ function drawCones(z) {
     const oy = (wp.y + 0.5) * TILE_SIZE;
     const facing = waypointFacing(guard.patrol, wi);
     const isDog = guard.kind === 'dog';
-    const fov = isDog ? DOG_VISION_FOV : VISION_FOV;
-    const range = isDog ? DOG_VISION_RANGE : VISION_RANGE;
-    ctx.fillStyle = selected ? COLOR.cone : COLOR.coneFaint;
+    const isBoat = guard.kind === 'boat';
+    // A boat's wedge is everything its searchlight can swing across from this heading.
+    const fov = isBoat
+      ? (((guard.sweep ?? BOAT_DEFAULT_SWEEP) * Math.PI) / 180) + BOAT_LIGHT_FOV
+      : isDog ? DOG_VISION_FOV : VISION_FOV;
+    const range = isBoat ? BOAT_LIGHT_RANGE : isDog ? DOG_VISION_RANGE : VISION_RANGE;
+    if (isBoat) ctx.fillStyle = selected ? COLOR.boatLight : COLOR.boatLightFaint;
+    else ctx.fillStyle = selected ? COLOR.cone : COLOR.coneFaint;
     ctx.beginPath();
     ctx.moveTo(ox * scale, oy * scale);
     for (let i = 0; i <= CONE_RAYS; i++) {
@@ -914,7 +943,7 @@ function drawCones(z) {
 function drawGuards(z) {
   state.doc.guards.forEach((guard, gi) => {
     const selected = gi === state.sel.guard;
-    const color = guard.kind === 'dog' ? COLOR.dog : guard.target ? COLOR.target : COLOR.guard;
+    const color = COLOR[guard.kind] ?? (guard.target ? COLOR.target : COLOR.guard);
     const points = guard.patrol.map((wp) => [(wp.x + 0.5) * z, (wp.y + 0.5) * z]);
 
     if (points.length > 1) {
@@ -1244,15 +1273,24 @@ function renderPanel() {
       </section>`
     : '';
 
-  const isDog = guard?.kind === 'dog';
+  const kind = guard?.kind ?? 'guard';
+  const kindExtras = {
+    guard: () => `<label class="check"><input type="checkbox" data-guard="target" ${guard.target ? 'checked' : ''}> Target</label>
+        <label>Radio channel <input data-guard="radio" value="${esc(guard.radio ?? '')}" placeholder="none — e.g. red"></label>`,
+    dog: () => `<span style="color:var(--muted)">Smells the player all around it (even in cover), follows their scent trail, finds concealed bodies, barks for guards and bites. No radio, never a target.</span>`,
+    boat: () => `<div class="row">
+          <label>Light sweep (°) <input type="number" min="0" max="360" step="15" data-guard="sweep" value="${guard.sweep ?? ''}" placeholder="${BOAT_DEFAULT_SWEEP}"></label>
+          <label>Pass time (s) <input type="number" min="0.5" step="0.5" data-guard="sweepTime" value="${guard.sweepTime ?? ''}" placeholder="${BOAT_DEFAULT_SWEEP_TIME}"></label>
+        </div>
+        <span style="color:var(--muted)">Sails its route over deep water; the searchlight swings around its heading and acts like a camera. Can't be taken down.</span>`,
+  };
   const guardSection = guard
     ? `<section>
-        <h2>${isDog ? 'Dog' : 'Guard'} ${sel.guard + 1}</h2>
+        <h2>${kind[0].toUpperCase() + kind.slice(1)} ${sel.guard + 1}</h2>
         <div class="row">
           <label>Kind
             <select data-guard="kind">
-              <option value="guard" ${isDog ? '' : 'selected'}>guard</option>
-              <option value="dog" ${isDog ? 'selected' : ''}>dog</option>
+              ${['guard', 'dog', 'boat'].map((k) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${k}</option>`).join('')}
             </select>
           </label>
           <label>Route
@@ -1262,12 +1300,7 @@ function renderPanel() {
             </select>
           </label>
         </div>
-        ${
-          isDog
-            ? `<span style="color:var(--muted)">Smells the player all around it (even in cover), follows their scent trail, finds concealed bodies, barks for guards and bites. No radio, never a target.</span>`
-            : `<label class="check"><input type="checkbox" data-guard="target" ${guard.target ? 'checked' : ''}> Target</label>
-        <label>Radio channel <input data-guard="radio" value="${esc(guard.radio ?? '')}" placeholder="none — e.g. red"></label>`
-        }
+        ${kindExtras[kind]()}
         <table class="waypoints">
           <thead><tr><th>#</th><th>Tile</th><th>Wait (s)</th><th>Look</th><th></th></tr></thead>
           <tbody>
@@ -1284,7 +1317,7 @@ function renderPanel() {
               .join('')}
           </tbody>
         </table>
-        <button data-action="delete-guard" class="danger">Delete ${isDog ? 'dog' : 'guard'}</button>
+        <button data-action="delete-guard" class="danger">Delete ${kind}</button>
       </section>`
     : '';
 
@@ -1368,12 +1401,18 @@ function onPanelChange(e) {
     const guard = doc.guards[state.sel.guard];
     if (el.dataset.guard === 'route') guard.route = el.value;
     else if (el.dataset.guard === 'radio') guard.radio = el.value.trim() || undefined;
-    else if (el.dataset.guard === 'kind') {
-      guard.kind = el.value === 'dog' ? 'dog' : undefined;
-      // Dogs never carry radios or count as targets.
-      if (guard.kind === 'dog') {
+    else if (el.dataset.guard === 'sweep' || el.dataset.guard === 'sweepTime') {
+      guard[el.dataset.guard] = el.value === '' ? undefined : Number(el.value);
+    } else if (el.dataset.guard === 'kind') {
+      guard.kind = el.value === 'guard' ? undefined : el.value;
+      // Only guards carry radios or count as targets; only boats have a searchlight sweep.
+      if (guard.kind) {
         guard.radio = undefined;
         guard.target = false;
+      }
+      if (guard.kind !== 'boat') {
+        guard.sweep = undefined;
+        guard.sweepTime = undefined;
       }
       onDocChanged(true);
       return;

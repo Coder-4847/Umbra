@@ -49,6 +49,13 @@
  * can't be a target): shorter, wider sight plus a nose that smells the player all
  * around it (bushes and shadows don't help), follows the player's scent trail, finds
  * concealed bodies, barks to bring guards, and bites. Dogs count for eliminateAll.
+ * A guard with "kind": "boat" is a patrol boat: its waypoints are on deep water
+ * ("~") and each leg must run straight over deep water. It carries a searchlight
+ * that swings "sweep" degrees (default 60) around its heading, "sweepTime" seconds
+ * per pass (default 2.5), and acts like a camera. Boats can't be taken down and
+ * don't count for any objective; no radio, never a target.
+ * Deep water blocks walking but not sight or sound; a body dragged to its edge can
+ * be sunk (E). Shallow water (",") is walkable but slow, splashes and washes scent.
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
@@ -59,6 +66,13 @@ import { hasLineOfSight } from '../world/raycast.js';
 import { angleDiff } from '../core/math.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
 import { DOG_SCENT_RADIUS, DOG_VISION_FOV, DOG_VISION_RANGE } from '../entities/dogRules.js';
+import {
+  BOAT_DEFAULT_SWEEP,
+  BOAT_DEFAULT_SWEEP_TIME,
+  BOAT_LIGHT_FOV,
+  BOAT_LIGHT_RANGE,
+  isWaterLeg,
+} from '../entities/boatRules.js';
 import { distanceToSegment, laserActiveAt } from '../entities/securityRules.js';
 
 export const FORMAT_VERSION = 1;
@@ -69,6 +83,8 @@ export const LEGEND = Object.freeze({
   '%': { tile: Tile.BUSH, label: 'Bush' },
   ':': { tile: Tile.SHADOW, label: 'Shadow' },
   '*': { tile: Tile.SNOW, label: 'Snow' },
+  '~': { tile: Tile.WATER, label: 'Deep water' },
+  ',': { tile: Tile.SHALLOW, label: 'Shallow water' },
   P: { tile: Tile.FLOOR, marker: 'spawn', label: 'Player spawn' },
   E: { tile: Tile.FLOOR, marker: 'exit', label: 'Exit' },
   i: { tile: Tile.FLOOR, marker: 'intel', label: 'Intel' },
@@ -80,7 +96,7 @@ export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'co
 export const COMPASS = Object.freeze({ E: 0, SE: 45, S: 90, SW: 135, W: 180, NW: 225, N: 270, NE: 315 });
 
 const ROUTES = ['loop', 'pingpong'];
-export const GUARD_KINDS = Object.freeze(['guard', 'dog']);
+export const GUARD_KINDS = Object.freeze(['guard', 'dog', 'boat']);
 const BODY_HALF_SIZE = 10;
 const DEFAULT_TARGET_TIME = 90;
 const MIN_SIZE = 5;
@@ -170,7 +186,7 @@ function readLinks(list, map, errors) {
     }
     const kind = link.kind ?? 'stairs';
     if (!LINK_KINDS.includes(kind)) errors.push(`${label}: kind must be "stairs" or "elevator"`);
-    if (map.isSolid(x1, y1) || map.isSolid(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
+    if (map.isBlocked(x1, y1) || map.isBlocked(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
     if (x1 === x2 && y1 === y2) errors.push(`${label}: its two ends must be different tiles`);
     for (const key of new Set([`${x1},${y1}`, `${x2},${y2}`])) {
       if (usedTiles.has(key)) errors.push(`${label}: tile (${key}) is already the end of another link`);
@@ -209,7 +225,7 @@ function readPanels(list, map, errors) {
       errors.push(`${label}: x and y must be whole tile coordinates`);
       return;
     }
-    if (map.isSolid(x, y)) errors.push(`${label} at (${x},${y}) must be on a floor tile`);
+    if (map.isBlocked(x, y)) errors.push(`${label} at (${x},${y}) must be on a floor tile`);
     const id = panel.id ?? null;
     if (id !== null && (typeof id !== 'string' || id === '')) errors.push(`${label}: id must be a non-empty string`);
     else if (id !== null && seen.has(id)) errors.push(`${label}: id "${id}" is used by another panel`);
@@ -232,7 +248,7 @@ function readLasers(list, map, panelIds, errors) {
       errors.push(`${label}: x1, y1, x2, y2 must be whole tile coordinates`);
       return;
     }
-    if (map.isSolid(x1, y1) || map.isSolid(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
+    if (map.isBlocked(x1, y1) || map.isBlocked(x2, y2)) errors.push(`${label}: both ends must be on floor tiles`);
     if (x1 === x2 && y1 === y2) errors.push(`${label}: its two ends must be different tiles`);
     const a = tileCenter(x1, y1);
     const b = tileCenter(x2, y2);
@@ -355,26 +371,37 @@ function readGuards(list, map, errors) {
       errors.push(`${label}: needs at least one patrol waypoint`);
       return;
     }
-    const patrol = guard.patrol.map((wp, wi) => readWaypoint(wp, `${label} waypoint ${wi + 1}`, map, errors));
+    const kind = guard.kind ?? 'guard';
+    if (!GUARD_KINDS.includes(kind)) errors.push(`${label}: kind must be "guard", "dog" or "boat"`);
+    const onWater = kind === 'boat';
+    const patrol = guard.patrol.map((wp, wi) => readWaypoint(wp, `${label} waypoint ${wi + 1}`, map, errors, onWater));
     if (patrol.includes(null)) return;
     const radio = guard.radio ?? null;
     if (radio !== null && (typeof radio !== 'string' || radio === '')) errors.push(`${label}: radio must be a channel name`);
-    const kind = guard.kind ?? 'guard';
-    if (!GUARD_KINDS.includes(kind)) errors.push(`${label}: kind must be "guard" or "dog"`);
-    if (kind === 'dog' && radio !== null) errors.push(`${label}: dogs can't carry a radio`);
-    if (kind === 'dog' && guard.target === true) errors.push(`${label}: a dog can't be a target`);
-    guards.push({ kind, route, target: guard.target === true, radio, patrol });
+    if (kind !== 'guard' && radio !== null) errors.push(`${label}: only guards carry a radio`);
+    if (kind !== 'guard' && guard.target === true) errors.push(`${label}: only guards can be targets`);
+    const unit = { kind, route, target: guard.target === true, radio, patrol };
+    if (kind === 'boat') {
+      const sweep = guard.sweep ?? BOAT_DEFAULT_SWEEP;
+      const sweepTime = guard.sweepTime ?? BOAT_DEFAULT_SWEEP_TIME;
+      if (typeof sweep !== 'number' || sweep < 0 || sweep > 360) errors.push(`${label}: sweep must be 0–360 degrees`);
+      if (typeof sweepTime !== 'number' || sweepTime <= 0) errors.push(`${label}: sweepTime must be a positive number of seconds`);
+      unit.sweep = (sweep * Math.PI) / 180;
+      unit.sweepTime = sweepTime;
+    }
+    guards.push(unit);
   });
   return guards;
 }
 
-function readWaypoint(wp, label, map, errors) {
+function readWaypoint(wp, label, map, errors, onWater = false) {
   const [x, y, wait, look] = Array.isArray(wp) ? wp : [wp?.x, wp?.y, wp?.wait, wp?.look];
   if (!Number.isInteger(x) || !Number.isInteger(y)) {
     errors.push(`${label}: x and y must be whole tile coordinates`);
     return null;
   }
-  if (map.isSolid(x, y)) errors.push(`${label} at (${x},${y}) is inside a wall or off the map`);
+  if (onWater && !map.isWater(x, y)) errors.push(`${label} at (${x},${y}) must be on deep water`);
+  else if (!onWater && map.isBlocked(x, y)) errors.push(`${label} at (${x},${y}) is inside a wall, in deep water or off the map`);
   if (wait != null && !(typeof wait === 'number' && wait >= 0)) errors.push(`${label}: wait must be seconds >= 0`);
   return { ...tileCenter(x, y), tx: x, ty: y, wait: wait ?? 0, look: readLook(look, label, errors) };
 }
@@ -424,11 +451,13 @@ function checkPlayability(level, errors, warnings) {
   }
 
   const mustEliminate = (g) =>
-    level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets'));
+    g.kind !== 'boat' &&
+    (level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets')));
 
   level.guards.forEach((guard, gi) => {
     const isDog = guard.kind === 'dog';
-    const label = isDog ? `Guard ${gi + 1} (dog)` : `Guard ${gi + 1}`;
+    const isBoat = guard.kind === 'boat';
+    const label = guard.kind === 'guard' ? `Guard ${gi + 1}` : `Guard ${gi + 1} (${guard.kind})`;
     const { patrol } = guard;
     if (mustEliminate(guard) && !reachable(patrol[0])) errors.push(`${label} can't be reached, so it can't be eliminated`);
 
@@ -437,14 +466,25 @@ function checkPlayability(level, errors, warnings) {
       const a = patrol[i];
       const b = patrol[(i + 1) % patrol.length];
       if (a.tx === b.tx && a.ty === b.ty) continue;
-      if (!findPath(map, a.x, a.y, b.x, b.y, BODY_HALF_SIZE)) {
-        warnings.push(`${label}: no walkable path from waypoint ${i + 1} to ${((i + 1) % patrol.length) + 1}`);
+      const next = ((i + 1) % patrol.length) + 1;
+      if (isBoat) {
+        if (!isWaterLeg(map, a, b)) errors.push(`${label}: the leg from waypoint ${i + 1} to ${next} leaves deep water`);
+      } else if (!findPath(map, a.x, a.y, b.x, b.y, BODY_HALF_SIZE)) {
+        warnings.push(`${label}: no walkable path from waypoint ${i + 1} to ${next}`);
       }
     }
 
     const start = patrol[0];
     const facing = initialFacing(patrol);
     const dist = Math.hypot(spawn.x - start.x, spawn.y - start.y);
+    if (isBoat) {
+      const reach = guard.sweep / 2 + BOAT_LIGHT_FOV / 2;
+      const angle = Math.atan2(spawn.y - start.y, spawn.x - start.x);
+      if (dist <= BOAT_LIGHT_RANGE && Math.abs(angleDiff(angle, facing)) <= reach && hasLineOfSight(map, start.x, start.y, spawn.x, spawn.y)) {
+        warnings.push(`${label}'s searchlight covers the player spawn at the start`);
+      }
+      return;
+    }
     const fov = isDog ? DOG_VISION_FOV : VISION_FOV;
     const range = isDog ? DOG_VISION_RANGE : VISION_RANGE;
     const inCone = Math.abs(angleDiff(Math.atan2(spawn.y - start.y, spawn.x - start.x), facing)) <= fov / 2;

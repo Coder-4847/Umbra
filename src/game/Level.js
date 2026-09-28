@@ -11,6 +11,7 @@ import { Guard, GuardState } from '../entities/Guard.js';
 import { Dog } from '../entities/Dog.js';
 import { Body } from '../entities/Body.js';
 import { SecurityCamera } from '../entities/SecurityCamera.js';
+import { PatrolBoat } from '../entities/PatrolBoat.js';
 import { Birds } from '../entities/Birds.js';
 import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 import { Laser } from '../entities/Laser.js';
@@ -50,6 +51,14 @@ const RADIO_CHECKIN_INTERVAL = 10;
 const RADIO_NOTICE_TIME = 3.5;
 // A barking dog brings every guard in earshot on its floor to where it last sensed the player.
 const BARK_RADIUS = 340;
+// Shallow water: slow going, and every few strides splashes loud enough to hear.
+const WADE_SPEED_FACTOR = 0.6;
+const SPLASH_NOISE_RADIUS = 150;
+const SPLASH_STEP_INTERVAL = 0.45;
+// Dragging a body to the edge of deep water lets you sink it for good; the splash carries.
+const SINK_REACH = 26;
+const SINK_NOISE_RADIUS = 160;
+const SINK_LOCK_TIME = 0.35;
 const PICKUP_RANGE = 22;
 
 const COLOR = {
@@ -66,6 +75,7 @@ const COLOR = {
   link: 0xc4b5fd,
   radio: 0x93c5fd,
   bark: 0xffc98a,
+  water: 0x7cc4ff,
 };
 
 const OBJECTIVE_LABELS = {
@@ -93,7 +103,7 @@ export class Level extends EventEmitter {
     this.markers = new Graphics();
     this.tracks = new SnowTracks(this.tilemap);
     // Only levels with dogs track the player's scent.
-    this.scent = data.guards.some((g) => g.kind === 'dog') ? new ScentTrail() : null;
+    this.scent = data.guards.some((g) => g.kind === 'dog') ? new ScentTrail(this.tilemap) : null;
 
     this.links = data.links;
     this.tilemap.setLinks(this.links);
@@ -135,7 +145,9 @@ export class Level extends EventEmitter {
     for (const laser of this.lasers) this.hazardLayer.addChild(laser.view);
     for (const panel of this.panels) this.hazardLayer.addChild(panel.view);
 
-    this.guards = data.guards.map((guardConfig) => this._addGuard(guardConfig));
+    // Boats patrol from the same list as guards and dogs, but they're security, not people to take down.
+    this.guards = data.guards.filter((g) => g.kind !== 'boat').map((config) => this._addGuard(config));
+    this.boats = data.guards.filter((g) => g.kind === 'boat').map((config) => this._addBoat(config));
     this.cameras = data.cameras.map((cameraConfig) => {
       const camera = this._addCamera(cameraConfig);
       camera.panel = panelsById.get(cameraConfig.panel) ?? null;
@@ -181,6 +193,7 @@ export class Level extends EventEmitter {
       lasersTripped: 0,
       fullAlarms: 0,
       radioChecksFailed: 0,
+      bodiesSunk: 0,
     };
     this.failed = false;
     this.completed = false;
@@ -215,6 +228,7 @@ export class Level extends EventEmitter {
       const ctx = { player, bodies: this.bodies, tracks: this.tracks, scent: this.scent };
       for (const guard of this.guards) guard.update(dt, ctx);
       for (const camera of this.cameras) camera.update(dt, ctx);
+      for (const boat of this.boats) boat.update(dt, ctx);
       this._separateGuards();
       this._syncAlarmRunner();
       if (!this.failed) this._updateRadios(dt);
@@ -328,18 +342,25 @@ export class Level extends EventEmitter {
     if (input.wasActionPressed('interact')) this._interact();
 
     const move = input.getMoveVector();
-    const moving = move.x !== 0 || move.y !== 0;
-    player.sprinting = moving && !player.dragging && player.lockTimer <= 0 && input.isActionDown('sprint');
-    const speed = player.dragging ? PLAYER_SPEED.drag : player.sprinting ? PLAYER_SPEED.sprint : PLAYER_SPEED.walk;
+    const moving = (move.x !== 0 || move.y !== 0) && player.lockTimer <= 0;
+    player.sprinting = moving && !player.dragging && input.isActionDown('sprint');
+    const baseSpeed = player.dragging ? PLAYER_SPEED.drag : player.sprinting ? PLAYER_SPEED.sprint : PLAYER_SPEED.walk;
+    const wading = this.tilemap.isShallowAtWorld(player.x, player.y);
 
-    player.update(dt, move, speed, this.tilemap);
+    player.update(dt, move, baseSpeed * (wading ? WADE_SPEED_FACTOR : 1), this.tilemap);
     player.isHidden = this.tilemap.isConcealingAtWorld(player.x, player.y);
 
-    if (player.sprinting) {
+    // Sprinting is always loud; wading through shallows splashes even at a walk.
+    if (moving && (player.sprinting || wading)) {
       this.stepTimer -= dt;
       if (this.stepTimer <= 0) {
-        this.emitNoise(player.x, player.y, SPRINT_NOISE_RADIUS, false);
-        this.stepTimer = SPRINT_STEP_INTERVAL;
+        if (player.sprinting) {
+          this.emitNoise(player.x, player.y, SPRINT_NOISE_RADIUS, false);
+          this.stepTimer = SPRINT_STEP_INTERVAL;
+        } else {
+          this.emitNoise(player.x, player.y, SPLASH_NOISE_RADIUS, false, { color: COLOR.water });
+          this.stepTimer = SPLASH_STEP_INTERVAL;
+        }
       }
     } else {
       this.stepTimer = 0;
@@ -381,7 +402,8 @@ export class Level extends EventEmitter {
 
   /**
    * E: take stairs/elevator you're standing at (bringing a carried body along),
-   * else drop a carried body, else hack a panel in reach, else grab a nearby body.
+   * else sink a carried body into deep water in reach, else drop it, else hack
+   * a panel in reach, else grab a nearby body.
    */
   _interact() {
     const { player } = this;
@@ -391,7 +413,9 @@ export class Level extends EventEmitter {
       return;
     }
     if (player.dragging) {
-      this._drop();
+      const water = this.waterInReach();
+      if (water) this._sinkBody(water);
+      else this._drop();
       return;
     }
     const panel = this.hackablePanel();
@@ -417,10 +441,35 @@ export class Level extends EventEmitter {
     const body = this.player.dragging;
     body.carried = false;
     this.player.dragging = null;
-    if (this.tilemap.isSolidAtWorld(body.x, body.y)) {
+    if (this.tilemap.isBlockedAtWorld(body.x, body.y)) {
       body.x = this.player.x;
       body.y = this.player.y;
     }
+  }
+
+  /** A point on deep water right beside the player (ahead first), if there is one. */
+  waterInReach() {
+    const { player } = this;
+    for (let i = 0; i < 9; i++) {
+      const angle = i === 0 ? player.facing : ((i - 1) * Math.PI) / 4;
+      const x = player.x + Math.cos(angle) * SINK_REACH;
+      const y = player.y + Math.sin(angle) * SINK_REACH;
+      if (this.tilemap.isWaterAtWorld(x, y)) return { x, y };
+    }
+    return null;
+  }
+
+  /** Gone for good — nobody will find this one — but the splash is heard. */
+  _sinkBody(water) {
+    const { player } = this;
+    const body = player.dragging;
+    player.dragging = null;
+    this.bodies.splice(this.bodies.indexOf(body), 1);
+    body.view.destroy();
+    this.stats.bodiesSunk++;
+    player.lockTimer = SINK_LOCK_TIME;
+    this.effects.burst(water.x, water.y, COLOR.water);
+    this.emitNoise(water.x, water.y, SINK_NOISE_RADIUS, false, { color: COLOR.water });
   }
 
   _followCarrier(body, dt) {
@@ -428,7 +477,7 @@ export class Level extends EventEmitter {
     const behind = player.facing + Math.PI;
     const tx = player.x + Math.cos(behind) * DRAG_OFFSET;
     const ty = player.y + Math.sin(behind) * DRAG_OFFSET;
-    if (this.tilemap.isSolidAtWorld(tx, ty)) return;
+    if (this.tilemap.isBlockedAtWorld(tx, ty)) return;
     const t = Math.min(1, dt * 12);
     body.x += (tx - body.x) * t;
     body.y += (ty - body.y) * t;
@@ -639,6 +688,18 @@ export class Level extends EventEmitter {
     camera.on('report', (_, x, y) => this._onCameraSighting(camera, x, y, false));
     camera.on('bodyFound', (_, body) => this._onBodyFound(camera, body, CAMERA_ALARM_RADIUS));
     return camera;
+  }
+
+  /** Patrol boats are moving searchlights: they report like cameras and never go to sleep. */
+  _addBoat(config) {
+    const boat = new PatrolBoat({ tilemap: this.tilemap, ...config });
+    this.coneLayer.addChild(boat.coneView);
+    this.entityLayer.addChild(boat.view);
+
+    boat.on('alarm', (_, x, y) => this._onCameraSighting(boat, x, y, true));
+    boat.on('report', (_, x, y) => this._onCameraSighting(boat, x, y, false));
+    boat.on('bodyFound', (_, body) => this._onBodyFound(boat, body, CAMERA_ALARM_RADIUS));
+    return boat;
   }
 
   /** Guards on the security net converge on what the camera sees; follow-up reports keep them on target. */
@@ -863,7 +924,7 @@ export class Level extends EventEmitter {
     if (this.finished || this.player.inTransit) return null;
     const pad = this.linkInReach();
     if (pad) return pad.link.kind === 'elevator' ? 'E — ride the elevator' : 'E — take the stairs';
-    if (this.player.dragging) return null;
+    if (this.player.dragging) return this.waterInReach() ? 'E — sink the body' : null;
     if (this.hackablePanel()) return 'E — disable alarm panel';
     return null;
   }
@@ -920,6 +981,7 @@ export class Level extends EventEmitter {
   destroy() {
     for (const guard of this.guards) guard.removeAllListeners();
     for (const camera of this.cameras) camera.removeAllListeners();
+    for (const boat of this.boats) boat.removeAllListeners();
     this.removeAllListeners();
     this.root.destroy({ children: true });
   }

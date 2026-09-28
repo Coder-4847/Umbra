@@ -6,6 +6,8 @@ export const Tile = Object.freeze({
   BUSH: 2,
   SHADOW: 3,
   SNOW: 4,
+  WATER: 5,
+  SHALLOW: 6,
 });
 
 export function tileCenter(tx, ty) {
@@ -17,6 +19,9 @@ export function tileCenter(tx, ty) {
  * this, so the level validator and editor can use them without Pixi.
  * Bushes and shadows are walkable and don't block sight; they hide what's inside.
  * Snow is walkable open ground that records footprints.
+ * Deep water can't be walked on but sight, sound and bullets cross it, so it
+ * belongs to the floor around it: `isSolid` (walls) is for sight, `isBlocked`
+ * (walls + deep water) for movement. Shallow water is walkable, slow and noisy.
  */
 export class GridMap {
   constructor(cols, rows, grid) {
@@ -39,8 +44,8 @@ export class GridMap {
   }
 
   /**
-   * Floor id for every tile: walkable tiles that connect without stairs or
-   * elevators share an id; walls are -1. A single-floor map is all 0.
+   * Floor id for every tile: open tiles (water included) that connect without
+   * stairs or elevators share an id; walls are -1. A single-floor map is all 0.
    */
   computeFloors() {
     const { cols, rows } = this;
@@ -84,6 +89,30 @@ export class GridMap {
 
   isSolidAtWorld(x, y) {
     return this.isSolid(Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE));
+  }
+
+  /** Can't be walked through: walls and deep water. */
+  isBlocked(tileX, tileY) {
+    if (tileX < 0 || tileY < 0 || tileX >= this.cols || tileY >= this.rows) return true;
+    const tile = this.grid[tileY][tileX];
+    return tile === Tile.WALL || tile === Tile.WATER;
+  }
+
+  isBlockedAtWorld(x, y) {
+    return this.isBlocked(Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE));
+  }
+
+  isWater(tileX, tileY) {
+    if (tileX < 0 || tileY < 0 || tileX >= this.cols || tileY >= this.rows) return false;
+    return this.grid[tileY][tileX] === Tile.WATER;
+  }
+
+  isWaterAtWorld(x, y) {
+    return this.tileAtWorld(x, y) === Tile.WATER;
+  }
+
+  isShallowAtWorld(x, y) {
+    return this.tileAtWorld(x, y) === Tile.SHALLOW;
   }
 
   isConcealingAtWorld(x, y) {

@@ -9,6 +9,8 @@ import { Player, PLAYER_SPEED } from '../entities/Player.js';
 import { Guard, GuardState } from '../entities/Guard.js';
 import { Body } from '../entities/Body.js';
 import { SecurityCamera } from '../entities/SecurityCamera.js';
+import { Birds } from '../entities/Birds.js';
+import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 import { angleDiff } from '../core/math.js';
 
 const TAKEDOWN_RANGE = 36;
@@ -23,6 +25,9 @@ const SPRINT_STEP_INTERVAL = 0.28;
 const LOUD_KILL_NOISE_RADIUS = 320;
 // Walls muffle sound: guards without line of sight to a noise hear it at reduced range.
 const MUFFLED_NOISE_FACTOR = 0.6;
+const BIRD_NOISE_RADIUS = 280;
+// Birds scatter from noises in the nearer part of their range, not at the very edge.
+const WILDLIFE_HEARING = 0.6;
 const BACKUP_RADIUS = 360;
 // Cameras are wired into the security system, so their alarms reach further than a shout.
 const CAMERA_ALARM_RADIUS = 520;
@@ -30,6 +35,7 @@ const PICKUP_RANGE = 22;
 
 const COLOR = {
   noise: 0xdcdcf0,
+  wildlife: 0xd6cbb3,
   alarm: 0xff4545,
   body: 0xffa53d,
   silent: 0xffffff,
@@ -83,6 +89,8 @@ export class Level extends EventEmitter {
     this.player = new Player(data.spawn.x, data.spawn.y);
     this.guards = data.guards.map((guardConfig) => this._addGuard(guardConfig));
     this.cameras = data.cameras.map((cameraConfig) => this._addCamera(cameraConfig));
+    this.wildlife = data.wildlife.map((point) => new Birds(point.x, point.y));
+    for (const flock of this.wildlife) this.entityLayer.addChild(flock.view);
     this.entityLayer.addChild(this.player.view);
     this.bodies = [];
 
@@ -93,7 +101,7 @@ export class Level extends EventEmitter {
     this.totalTargets = this.guards.filter((g) => g.target).length;
     this.exitUnlocked = false;
 
-    this.stats = { elapsed: 0, kills: 0, stealthKills: 0, detections: 0, bodiesDiscovered: 0 };
+    this.stats = { elapsed: 0, kills: 0, stealthKills: 0, detections: 0, bodiesDiscovered: 0, wildlifeFlushed: 0 };
     this.failed = false;
     this.completed = false;
     this.time = 0;
@@ -111,6 +119,7 @@ export class Level extends EventEmitter {
     if (!this.finished) {
       this.stats.elapsed += dt;
       this._updatePlayer(dt, input);
+      this._checkWildlifeProximity();
       this._updateObjectives();
     } else {
       player.update(dt, { x: 0, y: 0 }, 0, this.tilemap);
@@ -129,6 +138,7 @@ export class Level extends EventEmitter {
       body.update(this.tilemap);
     }
     this.tracks.update(dt, player, this.bodies);
+    for (const flock of this.wildlife) flock.update(dt);
 
     this._drawMarkers();
     this.effects.update(dt);
@@ -392,14 +402,42 @@ export class Level extends EventEmitter {
     }
   }
 
-  emitNoise(x, y, radius, alarming) {
-    this.effects.ring(x, y, radius, alarming ? COLOR.alarm : COLOR.noise, alarming ? 0.6 : 0.45);
+  /**
+   * Guards in earshot react; wildlife within the nearer part of the radius takes
+   * flight. A flock's own noise doesn't flush other flocks, so birds can't chain
+   * across the whole map.
+   */
+  emitNoise(x, y, radius, alarming, { fromWildlife = false } = {}) {
+    const color = fromWildlife ? COLOR.wildlife : alarming ? COLOR.alarm : COLOR.noise;
+    this.effects.ring(x, y, radius, color, alarming ? 0.6 : 0.45);
     for (const guard of this.guards) {
       const dist = Math.hypot(guard.x - x, guard.y - y);
       if (dist > radius) continue;
       if (dist > radius * MUFFLED_NOISE_FACTOR && !hasLineOfSight(this.tilemap, x, y, guard.x, guard.y)) continue;
       guard.hearNoise(x, y, alarming);
     }
+    if (fromWildlife) return;
+    for (const flock of this.wildlife) {
+      if (flock.flushed) continue;
+      if (Math.hypot(flock.x - x, flock.y - y) <= radius * WILDLIFE_HEARING) this._flushBirds(flock);
+    }
+  }
+
+  // --- wildlife ----------------------------------------------------------------
+
+  _checkWildlifeProximity() {
+    const { player } = this;
+    for (const flock of this.wildlife) {
+      if (flock.flushed) continue;
+      if (Math.hypot(flock.x - player.x, flock.y - player.y) <= BIRD_PROXIMITY) this._flushBirds(flock);
+    }
+  }
+
+  /** Startled birds make a racket that brings guards to where the flock was, not to the player. */
+  _flushBirds(flock) {
+    flock.flush();
+    this.stats.wildlifeFlushed++;
+    this.emitNoise(flock.x, flock.y, BIRD_NOISE_RADIUS, false, { fromWildlife: true });
   }
 
   /** Pushes overlapping guards apart so converging guards don't stack into one sprite. */

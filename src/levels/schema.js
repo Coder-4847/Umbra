@@ -26,9 +26,12 @@
  * Cameras are ceiling-mounted on a floor tile: `look` (required) is the center
  * of the sweep, `sweep` its width in degrees (default 90, 0 = fixed),
  * `sweepTime` seconds per pass (default 3), `pause` seconds held at each end (default 1).
+ * Birds ("b" in tiles) are a resting flock on a floor tile: walking right past them
+ * or making noise near them flushes them, and guards come to check the spot.
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
+import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 import { GridMap, Tile, tileCenter } from '../world/tiles.js';
 import { findPath } from '../world/pathfinding.js';
 import { hasLineOfSight } from '../world/raycast.js';
@@ -46,6 +49,7 @@ export const LEGEND = Object.freeze({
   P: { tile: Tile.FLOOR, marker: 'spawn', label: 'Player spawn' },
   E: { tile: Tile.FLOOR, marker: 'exit', label: 'Exit' },
   i: { tile: Tile.FLOOR, marker: 'intel', label: 'Intel' },
+  b: { tile: Tile.FLOOR, marker: 'wildlife', label: 'Birds' },
 });
 
 export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'collect', 'exit']);
@@ -168,6 +172,7 @@ function readTiles(tiles, errors) {
   const spawns = [];
   const exits = [];
   const intel = [];
+  const wildlife = [];
   let malformed = false;
 
   for (let y = 0; y < rows; y++) {
@@ -190,13 +195,14 @@ function readTiles(tiles, errors) {
       if (entry.marker === 'spawn') spawns.push(point);
       else if (entry.marker === 'exit') exits.push(point);
       else if (entry.marker === 'intel') intel.push(point);
+      else if (entry.marker === 'wildlife') wildlife.push(point);
     }
     grid.push(gridRow);
   }
 
   if (malformed) return null;
   if (spawns.length !== 1) errors.push(`Exactly one player spawn "P" is required (found ${spawns.length})`);
-  return { cols, rows, grid, spawn: spawns[0] ?? null, exits, intel };
+  return { cols, rows, grid, spawn: spawns[0] ?? null, exits, intel, wildlife };
 }
 
 function readGuards(list, map, errors) {
@@ -314,6 +320,12 @@ function checkPlayability(level, errors, warnings) {
       warnings.push(`Camera ${ci + 1}'s sweep covers the player spawn`);
     }
   });
+
+  for (const flock of level.wildlife) {
+    if (Math.hypot(flock.x - spawn.x, flock.y - spawn.y) <= BIRD_PROXIMITY * 1.5) {
+      warnings.push(`Birds at (${flock.tx},${flock.ty}) are right next to the spawn and will flush on the first step`);
+    }
+  }
 
   if (level.guards.length === 0 && level.cameras.length === 0) warnings.push('Level has no guards or cameras');
   if (level.exits.length > 0 && !level.objectives.includes('exit')) warnings.push('Exit tiles are placed but "exit" is not an objective');

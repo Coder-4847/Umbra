@@ -5,6 +5,7 @@ import { PLAYTEST_STORAGE_KEY } from '../levels/playtest.js';
 import { GridMap, TILE_SIZE } from '../world/tiles.js';
 import { raycast } from '../world/raycast.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
+import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 
 const DRAFT_KEY = 'umbra.editor.draft';
 const HISTORY_LIMIT = 200;
@@ -22,13 +23,14 @@ const TOOLS = [
   { id: 'exit', key: '6', label: 'Exit', char: 'E' },
   { id: 'intel', key: '7', label: 'Intel', char: 'i' },
   { id: 'snow', key: '8', label: 'Snow', char: '*' },
+  { id: 'birds', key: '9', label: 'Birds', char: 'b' },
   { id: 'guard', key: 'g', label: 'Guard' },
   { id: 'camera', key: 'c', label: 'Camera' },
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
 const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow', 'snow']);
-const TOGGLE_MARKERS = { exit: 'E', intel: 'i' };
+const TOGGLE_MARKERS = { exit: 'E', intel: 'i', birds: 'b' };
 
 const TILE_COLORS = { '#': '#3b3a48', '.': '#1d1d27', '%': '#24422f', ':': '#0a0a0f', '*': '#6c7788' };
 const COLOR = {
@@ -37,6 +39,8 @@ const COLOR = {
   spawn: '#4ade80',
   exit: '#4ade80',
   intel: '#ffd166',
+  birds: '#d6cbb3',
+  birdRange: 'rgba(214, 203, 179, 0.35)',
   cone: 'rgba(255, 243, 176, 0.13)',
   coneFaint: 'rgba(255, 243, 176, 0.05)',
   camera: '#7dd3fc',
@@ -53,6 +57,7 @@ const TOOL_HINTS = {
   exit: 'Click to toggle an exit tile',
   intel: 'Click to toggle an intel pickup',
   snow: 'Snow records footprints and drag marks that guards follow · floor tiles are plowed paths · Shift+drag for a rectangle',
+  birds: 'Click to toggle a flock · the dashed ring is how close the player can walk before it flushes',
   guard: 'Click to place a guard, keep clicking to add waypoints · Esc or right-click to finish',
   camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
   select: 'Click a waypoint or camera to select, drag to move · Del removes it (Shift+Del removes the whole guard)',
@@ -624,6 +629,19 @@ function render() {
         ctx.lineTo(cx, cy + z * 0.35);
         ctx.lineTo(cx - z * 0.25, cy);
         ctx.fill();
+      } else if (ch === 'b') {
+        ctx.fillStyle = COLOR.birds;
+        for (const [ox, oy] of [[-0.18, -0.1], [0.15, -0.16], [0.02, 0.14], [-0.2, 0.2]]) {
+          ctx.beginPath();
+          ctx.ellipse(cx + ox * z, cy + oy * z, z * 0.12, z * 0.08, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.strokeStyle = COLOR.birdRange;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.arc(cx, cy, (BIRD_PROXIMITY / TILE_SIZE) * z, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
     }
   }
@@ -900,7 +918,7 @@ function renderPanel() {
     <section class="help">
       <h2>Shortcuts</h2>
       <dl>
-        <dt>1–8, G, C, V</dt><dd>Tools</dd>
+        <dt>1–9, G, C, V</dt><dd>Tools</dd>
         <dt>Shift+drag</dt><dd>Rectangle fill</dd>
         <dt>Right-drag</dt><dd>Erase to floor</dd>
         <dt>Space+drag / wheel</dt><dd>Pan / zoom</dd>

@@ -30,6 +30,12 @@ const METER_DECAY = 0.3;
 const METER_AFTER_LOSING_TARGET = 0.6;
 const METER_ON_BODY_FOUND = 0.7;
 
+// Footprints are small: guards spot them closer than they spot a person.
+const TRACK_NOTICE_RANGE = 170;
+// On reaching a print, a tracking guard looks this far around for the next, newer one.
+const TRAIL_FOLLOW_RADIUS = 150;
+const TRACK_SCAN_INTERVAL = 0.2;
+
 const SEARCH_DURATION = 3.5;
 const LOSE_TARGET_TIME = 4;
 // Briefly keep tracking the player's true position after losing LOS so chases
@@ -96,6 +102,12 @@ export class Guard extends EventEmitter {
     this.aimTarget = null;
     this.confirmedSighting = false;
 
+    this.tracks = null;
+    // Time of the newest print this guard has already followed; older prints no longer interest it.
+    this.trailTime = -Infinity;
+    this.followingTrail = false;
+    this.trackScanTimer = 0;
+
     this.coneView = new Graphics();
     this.view = this._buildView();
     this._setDestination(this.x, this.y);
@@ -147,15 +159,19 @@ export class Guard extends EventEmitter {
     this.dead = true;
   }
 
-  /** @param ctx {{ player, bodies }} */
+  /** @param ctx {{ player, bodies, tracks? }} */
   update(dt, ctx) {
     if (this.dead) return;
     const { player } = ctx;
+    this.tracks = ctx.tracks ?? null;
     const sawPlayer = this.canSeePlayer;
     this.canSeePlayer = this._canSeePlayer(player, sawPlayer);
     this.fireCooldown = Math.max(0, this.fireCooldown - dt);
 
-    if (this.state !== GuardState.ALERT) this._checkBodies(ctx.bodies);
+    if (this.state !== GuardState.ALERT) {
+      this._checkBodies(ctx.bodies);
+      this._checkTracks(dt);
+    }
 
     switch (this.state) {
       case GuardState.PATROL:
@@ -200,6 +216,40 @@ export class Guard extends EventEmitter {
       this.emit('bodyFound', this, body);
       return;
     }
+  }
+
+  /** Notices the newest fresh print in view that's newer than any trail already followed. */
+  _checkTracks(dt) {
+    const prints = this.tracks?.prints;
+    if (!prints?.length) return;
+    this.trackScanTimer -= dt;
+    if (this.trackScanTimer > 0) return;
+    this.trackScanTimer = TRACK_SCAN_INTERVAL;
+
+    for (let i = prints.length - 1; i >= 0; i--) {
+      const print = prints[i];
+      if (print.time <= this.trailTime) return;
+      if (!this._canSeePoint(print.x, print.y, TRACK_NOTICE_RANGE)) continue;
+      this.trailTime = print.time;
+      this._enterSuspicious(print.x, print.y);
+      this.followingTrail = true;
+      return;
+    }
+  }
+
+  /** On reaching a print, the newest newer print close by and in line of sight, if any. */
+  _nextTrailPrint() {
+    const prints = this.tracks?.prints;
+    if (!this.followingTrail || !prints) return null;
+    for (let i = prints.length - 1; i >= 0; i--) {
+      const print = prints[i];
+      if (print.time <= this.trailTime) return null;
+      const dx = print.x - this.x;
+      const dy = print.y - this.y;
+      if (dx * dx + dy * dy > TRAIL_FOLLOW_RADIUS * TRAIL_FOLLOW_RADIUS) continue;
+      if (hasLineOfSight(this.tilemap, this.x, this.y, print.x, print.y)) return print;
+    }
+    return null;
   }
 
   _raiseMeter(dt, multiplier) {
@@ -261,6 +311,7 @@ export class Guard extends EventEmitter {
 
   _enterPatrol() {
     this.state = GuardState.PATROL;
+    this.followingTrail = false;
     this.waitTimer = 0;
     const waypoint = this.patrol[this.waypointIndex];
     this._setDestination(waypoint.x, waypoint.y);
@@ -271,6 +322,7 @@ export class Guard extends EventEmitter {
     this.meter = Math.max(this.meter, SUSPICIOUS_THRESHOLD);
     this.lastKnown = { x, y };
     this.searching = false;
+    this.followingTrail = false;
     this.repathTimer = REPATH_INTERVAL;
     this._setDestination(x, y);
   }
@@ -299,6 +351,13 @@ export class Guard extends EventEmitter {
 
     if (!this.searching) {
       if (this._followPath(dt, SPEED.suspicious, true)) {
+        const next = this._nextTrailPrint();
+        if (next) {
+          this.trailTime = next.time;
+          this.lastKnown = { x: next.x, y: next.y };
+          this._setDestination(next.x, next.y);
+          return;
+        }
         this.searching = true;
         this.searchTimer = SEARCH_DURATION;
         this.searchBaseAngle = this.facing;

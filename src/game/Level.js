@@ -2,6 +2,7 @@ import { Container, EventEmitter, Graphics } from 'pixi.js';
 import { Tilemap } from '../world/Tilemap.js';
 import { TILE_SIZE } from '../world/tiles.js';
 import { Effects } from '../world/Effects.js';
+import { SnowTracks } from '../world/SnowTracks.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { moveAndCollide } from '../world/collision.js';
 import { Player, PLAYER_SPEED } from '../entities/Player.js';
@@ -60,6 +61,7 @@ export class Level extends EventEmitter {
     this.tilemap = new Tilemap(data.cols, data.rows, data.grid);
     this.effects = new Effects();
     this.markers = new Graphics();
+    this.tracks = new SnowTracks(this.tilemap);
 
     this.root = new Container();
     this.bodyLayer = new Container();
@@ -69,6 +71,7 @@ export class Level extends EventEmitter {
     this.cameraLayer = new Container();
     this.root.addChild(
       this.tilemap.view,
+      this.tracks.view,
       this.markers,
       this.bodyLayer,
       this.coneLayer,
@@ -115,7 +118,7 @@ export class Level extends EventEmitter {
 
     // Freeze the guards once the level is won so nothing can change the final stats.
     if (!this.completed) {
-      const ctx = { player, bodies: this.bodies };
+      const ctx = { player, bodies: this.bodies, tracks: this.tracks };
       for (const guard of this.guards) guard.update(dt, ctx);
       for (const camera of this.cameras) camera.update(dt, ctx);
       this._separateGuards();
@@ -125,6 +128,7 @@ export class Level extends EventEmitter {
       if (body.carried) this._followCarrier(body, dt);
       body.update(this.tilemap);
     }
+    this.tracks.update(dt, player, this.bodies);
 
     this._drawMarkers();
     this.effects.update(dt);

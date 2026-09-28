@@ -42,6 +42,7 @@ export const LEGEND = Object.freeze({
   '.': { tile: Tile.FLOOR, label: 'Floor' },
   '%': { tile: Tile.BUSH, label: 'Bush' },
   ':': { tile: Tile.SHADOW, label: 'Shadow' },
+  '*': { tile: Tile.SNOW, label: 'Snow' },
   P: { tile: Tile.FLOOR, marker: 'spawn', label: 'Player spawn' },
   E: { tile: Tile.FLOOR, marker: 'exit', label: 'Exit' },
   i: { tile: Tile.FLOOR, marker: 'intel', label: 'Intel' },

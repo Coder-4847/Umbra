@@ -21,15 +21,16 @@ const TOOLS = [
   { id: 'spawn', key: '5', label: 'Spawn', char: 'P' },
   { id: 'exit', key: '6', label: 'Exit', char: 'E' },
   { id: 'intel', key: '7', label: 'Intel', char: 'i' },
+  { id: 'snow', key: '8', label: 'Snow', char: '*' },
   { id: 'guard', key: 'g', label: 'Guard' },
   { id: 'camera', key: 'c', label: 'Camera' },
   { id: 'select', key: 'v', label: 'Select' },
 ];
 const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
-const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow']);
+const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow', 'snow']);
 const TOGGLE_MARKERS = { exit: 'E', intel: 'i' };
 
-const TILE_COLORS = { '#': '#3b3a48', '.': '#1d1d27', '%': '#24422f', ':': '#0a0a0f' };
+const TILE_COLORS = { '#': '#3b3a48', '.': '#1d1d27', '%': '#24422f', ':': '#0a0a0f', '*': '#6c7788' };
 const COLOR = {
   guard: '#5b8def',
   target: '#e5625e',
@@ -51,6 +52,7 @@ const TOOL_HINTS = {
   spawn: 'Click to place the player spawn',
   exit: 'Click to toggle an exit tile',
   intel: 'Click to toggle an intel pickup',
+  snow: 'Snow records footprints and drag marks that guards follow · floor tiles are plowed paths · Shift+drag for a rectangle',
   guard: 'Click to place a guard, keep clicking to add waypoints · Esc or right-click to finish',
   camera: 'Click a floor tile to add a ceiling camera, or click one to select and drag it · set facing and sweep in the panel',
   select: 'Click a waypoint or camera to select, drag to move · Del removes it (Shift+Del removes the whole guard)',
@@ -898,7 +900,7 @@ function renderPanel() {
     <section class="help">
       <h2>Shortcuts</h2>
       <dl>
-        <dt>1–7, G, C, V</dt><dd>Tools</dd>
+        <dt>1–8, G, C, V</dt><dd>Tools</dd>
         <dt>Shift+drag</dt><dd>Rectangle fill</dd>
         <dt>Right-drag</dt><dd>Erase to floor</dd>
         <dt>Space+drag / wheel</dt><dd>Pan / zoom</dd>

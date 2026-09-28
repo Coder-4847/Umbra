@@ -8,6 +8,10 @@ const WALL_EDGE = 0x45434f;
 const BUSH_BASE = 0x1c3326;
 const BUSH_LEAF = 0x28523a;
 const SHADOW = 0x0d0d13;
+// Moonlit snow: bright enough to read footprints on, dim enough that vision cones still show.
+const SNOW_A = 0x6c7788;
+const SNOW_B = 0x687384;
+const SNOW_GLINT = 0x94a0b2;
 
 /** A GridMap with a Pixi view. Per-chapter tilesets replace these placeholder colors later. */
 export class Tilemap extends GridMap {
@@ -39,6 +43,12 @@ export class Tilemap extends GridMap {
           case Tile.SHADOW:
             graphics.rect(px, py, TILE_SIZE, TILE_SIZE).fill(SHADOW);
             break;
+          case Tile.SNOW: {
+            graphics.rect(px, py, TILE_SIZE, TILE_SIZE).fill((x + y) % 2 === 0 ? SNOW_A : SNOW_B);
+            const h = hash(x * 11, y * 17);
+            graphics.circle(px + 4 + (h % 24), py + 4 + ((h >> 6) % 24), 1.2).fill(SNOW_GLINT);
+            break;
+          }
           default:
             graphics.rect(px, py, TILE_SIZE, TILE_SIZE).fill((x + y) % 2 === 0 ? FLOOR_A : FLOOR_B);
         }

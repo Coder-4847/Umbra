@@ -3,10 +3,12 @@ import { Tilemap } from '../world/Tilemap.js';
 import { TILE_SIZE } from '../world/tiles.js';
 import { Effects } from '../world/Effects.js';
 import { SnowTracks } from '../world/SnowTracks.js';
+import { ScentTrail } from '../world/ScentTrail.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { moveAndCollide } from '../world/collision.js';
 import { Player, PLAYER_SPEED } from '../entities/Player.js';
 import { Guard, GuardState } from '../entities/Guard.js';
+import { Dog } from '../entities/Dog.js';
 import { Body } from '../entities/Body.js';
 import { SecurityCamera } from '../entities/SecurityCamera.js';
 import { Birds } from '../entities/Birds.js';
@@ -46,6 +48,8 @@ const FLOOR_SHADE_ALPHA = 0.62;
 // Radio nets check in this often; a member killed since the last check gets someone sent to look.
 const RADIO_CHECKIN_INTERVAL = 10;
 const RADIO_NOTICE_TIME = 3.5;
+// A barking dog brings every guard in earshot on its floor to where it last sensed the player.
+const BARK_RADIUS = 340;
 const PICKUP_RANGE = 22;
 
 const COLOR = {
@@ -61,6 +65,7 @@ const COLOR = {
   hack: 0x7dd3fc,
   link: 0xc4b5fd,
   radio: 0x93c5fd,
+  bark: 0xffc98a,
 };
 
 const OBJECTIVE_LABELS = {
@@ -87,6 +92,8 @@ export class Level extends EventEmitter {
     this.effects = new Effects();
     this.markers = new Graphics();
     this.tracks = new SnowTracks(this.tilemap);
+    // Only levels with dogs track the player's scent.
+    this.scent = data.guards.some((g) => g.kind === 'dog') ? new ScentTrail() : null;
 
     this.links = data.links;
     this.tilemap.setLinks(this.links);
@@ -105,8 +112,7 @@ export class Level extends EventEmitter {
     // Cameras hang from the ceiling, so they draw above the people walking under them.
     this.cameraLayer = new Container();
     this.root.addChild(
-      this.tilemap.view,
-      this.tracks.view,
+      ...[this.tilemap.view, this.tracks.view, this.scent?.view].filter(Boolean),
       this.markers,
       this.linkView,
       this.hazardLayer,
@@ -206,7 +212,7 @@ export class Level extends EventEmitter {
 
     // Freeze the guards once the level is won so nothing can change the final stats.
     if (!this.completed) {
-      const ctx = { player, bodies: this.bodies, tracks: this.tracks };
+      const ctx = { player, bodies: this.bodies, tracks: this.tracks, scent: this.scent };
       for (const guard of this.guards) guard.update(dt, ctx);
       for (const camera of this.cameras) camera.update(dt, ctx);
       this._separateGuards();
@@ -220,6 +226,7 @@ export class Level extends EventEmitter {
       body.update(this.tilemap);
     }
     this.tracks.update(dt, player, this.bodies);
+    this.scent?.update(dt, player);
     for (const flock of this.wildlife) flock.update(dt);
     for (const laser of this.lasers) laser.update(dt, this.time);
     for (const panel of this.panels) panel.update(this.time);
@@ -359,7 +366,7 @@ export class Level extends EventEmitter {
     const silent = fromBehind && target.state !== GuardState.ALERT;
 
     this._removeGuard(target);
-    const body = new Body(target.x, target.y, target.facing);
+    const body = new Body(target.x, target.y, target.facing, target.isDog);
     this.bodies.push(body);
     this.bodyLayer.addChild(body.view);
 
@@ -432,13 +439,20 @@ export class Level extends EventEmitter {
   // --- guards ----------------------------------------------------------------
 
   _addGuard(config) {
-    const guard = new Guard({ tilemap: this.tilemap, ...config });
+    const isDog = config.kind === 'dog';
+    const guard = isDog ? new Dog({ tilemap: this.tilemap, ...config }) : new Guard({ tilemap: this.tilemap, ...config });
     this.coneLayer.addChild(guard.coneView);
     this.entityLayer.addChild(guard.view);
 
+    guard.on('bodyFound', (_, body) => this._onBodyFound(guard, body));
+    if (isDog) {
+      guard.on('alert', () => this._onDogBark(guard, true));
+      guard.on('bark', () => this._onDogBark(guard, false));
+      guard.on('bite', () => this._onDogBite(guard));
+      return guard;
+    }
     guard.on('alert', () => this._onGuardSpottedPlayer(guard));
     guard.on('shoot', () => this._onGuardShoot(guard));
-    guard.on('bodyFound', (_, body) => this._onBodyFound(guard, body));
     guard.on('raiseAlarm', (_, panel) => this._raiseFullAlarm(guard, panel));
     return guard;
   }
@@ -472,6 +486,38 @@ export class Level extends EventEmitter {
       if (inEarshot || onRadio) guard.alertTo(caller.lastKnown.x, caller.lastKnown.y);
     }
     this._maybeSendAlarmRunner(caller);
+  }
+
+  // --- dogs ----------------------------------------------------------------------
+
+  /**
+   * A bark is sound: it reaches guards on the dog's floor within earshot (walls
+   * muffle it like any noise) and sends them to where the dog sensed the player.
+   * Dogs don't run for alarm panels; the guards they bring might.
+   */
+  _onDogBark(dog, isFirst) {
+    if (isFirst) this.stats.detections++;
+    this.effects.ring(dog.x, dog.y, BARK_RADIUS, COLOR.bark, isFirst ? 0.8 : 0.5);
+    const floor = this.floorAt(dog.x, dog.y);
+    for (const guard of this.guards) {
+      if (guard === dog || this.floorAt(guard.x, guard.y) !== floor) continue;
+      const dist = Math.hypot(guard.x - dog.x, guard.y - dog.y);
+      if (dist > BARK_RADIUS) continue;
+      if (dist > BARK_RADIUS * MUFFLED_NOISE_FACTOR && !hasLineOfSight(this.tilemap, dog.x, dog.y, guard.x, guard.y)) continue;
+      guard.alertTo(dog.lastKnown.x, dog.lastKnown.y);
+    }
+    for (const flock of this.wildlife) {
+      if (flock.flushed || this.floorAt(flock.x, flock.y) !== floor) continue;
+      if (Math.hypot(flock.x - dog.x, flock.y - dog.y) <= BARK_RADIUS * WILDLIFE_HEARING) this._flushBirds(flock);
+    }
+  }
+
+  _onDogBite(dog) {
+    const { player } = this;
+    if (!player.takeDamage(1)) return;
+    this.effects.burst(player.x, player.y, COLOR.alarm);
+    this.effects.ring(dog.x, dog.y, 30, COLOR.alarm, 0.25);
+    if (player.dead) this._fail();
   }
 
   // --- alarm panels & lasers ------------------------------------------------------
@@ -764,6 +810,7 @@ export class Level extends EventEmitter {
       player.dragging.view.visible = true;
     }
     this.tracks.jump(player, this.bodies);
+    this.scent?.jump(player);
     this._syncFloor();
     this.effects.burst(to.x, to.y, COLOR.link);
     if (link.kind === 'elevator') this.emitNoise(to.x, to.y, ELEVATOR_DING_RADIUS, false, { color: COLOR.link });

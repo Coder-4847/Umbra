@@ -12,7 +12,14 @@ export const GuardState = Object.freeze({
 });
 
 const HALF_SIZE = 10;
-const SPEED = { patrol: 70, suspicious: 95, alert: 150 };
+// Per-kind movement and senses; Dog overrides `tuning`.
+const GUARD_TUNING = Object.freeze({
+  speed: Object.freeze({ patrol: 70, suspicious: 95, alert: 150 }),
+  visionRange: VISION_RANGE,
+  visionFov: VISION_FOV,
+  // An alert guard stops closing in at this distance and shoots from there.
+  standoff: 110,
+});
 const TURN_SPEED = 4.5;
 const ALERT_TURN_SPEED = 8;
 
@@ -45,7 +52,6 @@ const REPATH_INTERVAL = 0.3;
 const ARRIVE_DIST = 4;
 
 const SHOOT_RANGE = 220;
-const STANDOFF_DIST = 110;
 const AIM_TIME = 0.6;
 const FIRE_COOLDOWN = 0.9;
 const AIM_TOLERANCE = (12 * Math.PI) / 180;
@@ -122,8 +128,17 @@ export class Guard extends EventEmitter {
     this._syncView();
   }
 
+  get tuning() {
+    return GUARD_TUNING;
+  }
+
+  get isDog() {
+    return false;
+  }
+
   get visionRange() {
-    return this.state === GuardState.ALERT ? VISION_RANGE * ALERT_RANGE_MULT : VISION_RANGE;
+    const base = this.tuning.visionRange;
+    return this.state === GuardState.ALERT ? base * ALERT_RANGE_MULT : base;
   }
 
   /** Sends the guard to check out a point. Ignored while alert. */
@@ -189,7 +204,7 @@ export class Guard extends EventEmitter {
       this.lostTimer = 0;
       this.lastKnown = { x: player.x, y: player.y };
     }
-    if (this._followPath(dt, SPEED.alert, true)) {
+    if (this._followPath(dt, this.tuning.speed.alert, true)) {
       run.pressTimer += dt;
       if (run.pressTimer >= PANEL_PRESS_TIME) {
         this.alarmRun = null;
@@ -242,7 +257,7 @@ export class Guard extends EventEmitter {
     const dx = x - this.x;
     const dy = y - this.y;
     if (dx * dx + dy * dy > range * range) return false;
-    if (Math.abs(angleDiff(Math.atan2(dy, dx), this.facing)) > VISION_FOV / 2) return false;
+    if (Math.abs(angleDiff(Math.atan2(dy, dx), this.facing)) > this.tuning.visionFov / 2) return false;
     return hasLineOfSight(this.tilemap, this.x, this.y, x, y);
   }
 
@@ -329,7 +344,7 @@ export class Guard extends EventEmitter {
       return;
     }
 
-    if (this._followPath(dt, SPEED.patrol, true)) {
+    if (this._followPath(dt, this.tuning.speed.patrol, true)) {
       this.waitTimer = waypoint.wait ?? 0;
       if (this.waitTimer <= 0) this._advanceWaypoint();
     }
@@ -383,14 +398,14 @@ export class Guard extends EventEmitter {
         this.repathTimer = REPATH_INTERVAL;
       }
       this._faceToward(player.x, player.y, dt, TURN_SPEED);
-      this._followPath(dt, SPEED.suspicious, false);
+      this._followPath(dt, this.tuning.speed.suspicious, false);
       return;
     }
 
     this.meter = Math.max(SUSPICIOUS_THRESHOLD * 0.5, this.meter - METER_DECAY * 0.5 * dt);
 
     if (!this.searching) {
-      if (this._followPath(dt, SPEED.suspicious, true)) {
+      if (this._followPath(dt, this.tuning.speed.suspicious, true)) {
         const next = this._nextTrailPrint();
         if (next) {
           this.trailTime = next.time;
@@ -442,7 +457,7 @@ export class Guard extends EventEmitter {
       }
       this._faceToward(player.x, player.y, dt, ALERT_TURN_SPEED);
       this._updateAim(dt, player);
-      if (this.playerDist > STANDOFF_DIST) this._followPath(dt, SPEED.alert, false);
+      if (this.playerDist > this.tuning.standoff) this._followPath(dt, this.tuning.speed.alert, false);
       return;
     }
 
@@ -457,7 +472,7 @@ export class Guard extends EventEmitter {
       }
     }
 
-    const arrived = this._followPath(dt, SPEED.alert, true);
+    const arrived = this._followPath(dt, this.tuning.speed.alert, true);
     if ((arrived && this.lostTimer >= PURSUIT_INTUITION_TIME) || this.lostTimer > LOSE_TARGET_TIME) {
       this._enterSuspicious(this.lastKnown.x, this.lastKnown.y);
       this.meter = METER_AFTER_LOSING_TARGET;
@@ -618,10 +633,11 @@ export class Guard extends EventEmitter {
 
   _drawCone() {
     const range = this.visionRange;
+    const fov = this.tuning.visionFov;
     const points = [this.x, this.y];
-    const start = this.facing - VISION_FOV / 2;
+    const start = this.facing - fov / 2;
     for (let i = 0; i <= CONE_RAYS; i++) {
-      const angle = start + (VISION_FOV * i) / CONE_RAYS;
+      const angle = start + (fov * i) / CONE_RAYS;
       const dirX = Math.cos(angle);
       const dirY = Math.sin(angle);
       const dist = raycast(this.tilemap, this.x, this.y, dirX, dirY, range);

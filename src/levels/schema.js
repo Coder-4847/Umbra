@@ -45,6 +45,10 @@
  * A guard's optional "radio": "<channel>" puts it on a radio net: the channel shares
  * sightings and found bodies level-wide, and checks in every few seconds, sending
  * someone to look when a member has gone silent.
+ * A guard with "kind": "dog" is a patrol dog (same patrol/route format; no radio,
+ * can't be a target): shorter, wider sight plus a nose that smells the player all
+ * around it (bushes and shadows don't help), follows the player's scent trail, finds
+ * concealed bodies, barks to bring guards, and bites. Dogs count for eliminateAll.
  * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
  * exit tile; always evaluated last, after the others are complete).
  */
@@ -54,6 +58,7 @@ import { findPath } from '../world/pathfinding.js';
 import { hasLineOfSight } from '../world/raycast.js';
 import { angleDiff } from '../core/math.js';
 import { CAMERA_FOV, CAMERA_RANGE, VISION_FOV, VISION_RANGE } from '../entities/vision.js';
+import { DOG_SCENT_RADIUS, DOG_VISION_FOV, DOG_VISION_RANGE } from '../entities/dogRules.js';
 import { distanceToSegment, laserActiveAt } from '../entities/securityRules.js';
 
 export const FORMAT_VERSION = 1;
@@ -75,6 +80,7 @@ export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'co
 export const COMPASS = Object.freeze({ E: 0, SE: 45, S: 90, SW: 135, W: 180, NW: 225, N: 270, NE: 315 });
 
 const ROUTES = ['loop', 'pingpong'];
+export const GUARD_KINDS = Object.freeze(['guard', 'dog']);
 const BODY_HALF_SIZE = 10;
 const DEFAULT_TARGET_TIME = 90;
 const MIN_SIZE = 5;
@@ -353,7 +359,11 @@ function readGuards(list, map, errors) {
     if (patrol.includes(null)) return;
     const radio = guard.radio ?? null;
     if (radio !== null && (typeof radio !== 'string' || radio === '')) errors.push(`${label}: radio must be a channel name`);
-    guards.push({ route, target: guard.target === true, radio, patrol });
+    const kind = guard.kind ?? 'guard';
+    if (!GUARD_KINDS.includes(kind)) errors.push(`${label}: kind must be "guard" or "dog"`);
+    if (kind === 'dog' && radio !== null) errors.push(`${label}: dogs can't carry a radio`);
+    if (kind === 'dog' && guard.target === true) errors.push(`${label}: a dog can't be a target`);
+    guards.push({ kind, route, target: guard.target === true, radio, patrol });
   });
   return guards;
 }
@@ -417,7 +427,8 @@ function checkPlayability(level, errors, warnings) {
     level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets'));
 
   level.guards.forEach((guard, gi) => {
-    const label = `Guard ${gi + 1}`;
+    const isDog = guard.kind === 'dog';
+    const label = isDog ? `Guard ${gi + 1} (dog)` : `Guard ${gi + 1}`;
     const { patrol } = guard;
     if (mustEliminate(guard) && !reachable(patrol[0])) errors.push(`${label} can't be reached, so it can't be eliminated`);
 
@@ -434,9 +445,14 @@ function checkPlayability(level, errors, warnings) {
     const start = patrol[0];
     const facing = initialFacing(patrol);
     const dist = Math.hypot(spawn.x - start.x, spawn.y - start.y);
-    const inCone = Math.abs(angleDiff(Math.atan2(spawn.y - start.y, spawn.x - start.x), facing)) <= VISION_FOV / 2;
-    if (dist <= VISION_RANGE && inCone && hasLineOfSight(map, start.x, start.y, spawn.x, spawn.y)) {
+    const fov = isDog ? DOG_VISION_FOV : VISION_FOV;
+    const range = isDog ? DOG_VISION_RANGE : VISION_RANGE;
+    const inCone = Math.abs(angleDiff(Math.atan2(spawn.y - start.y, spawn.x - start.x), facing)) <= fov / 2;
+    const clear = hasLineOfSight(map, start.x, start.y, spawn.x, spawn.y);
+    if (dist <= range && inCone && clear) {
       warnings.push(`${label} can see the player spawn at the start`);
+    } else if (isDog && dist <= DOG_SCENT_RADIUS + BODY_HALF_SIZE && clear) {
+      warnings.push(`${label} can smell the player spawn at the start`);
     }
   });
 

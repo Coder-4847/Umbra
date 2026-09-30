@@ -9,6 +9,8 @@ import { moveAndCollide } from '../world/collision.js';
 import { Player, PLAYER_SPEED } from '../entities/Player.js';
 import { Guard, GuardState } from '../entities/Guard.js';
 import { Dog } from '../entities/Dog.js';
+import { Boss } from '../entities/Boss.js';
+import { Gate } from '../entities/Gate.js';
 import { Body } from '../entities/Body.js';
 import { SecurityCamera } from '../entities/SecurityCamera.js';
 import { PatrolBoat } from '../entities/PatrolBoat.js';
@@ -60,6 +62,11 @@ const SINK_REACH = 26;
 const SINK_NOISE_RADIUS = 160;
 const SINK_LOCK_TIME = 0.35;
 const PICKUP_RANGE = 22;
+// A wounded boss vanishes in smoke; the commotion brings guards nearby to the spot.
+const BOSS_WOUND_NOISE_RADIUS = 280;
+// A botched attack on a boss: it throws the player back and the fight gets loud.
+const BOSS_PARRY_PUSH = 26;
+const BOSS_NOTICE_TIME = 4.5;
 
 const COLOR = {
   noise: 0xdcdcf0,
@@ -76,12 +83,15 @@ const COLOR = {
   radio: 0x93c5fd,
   bark: 0xffc98a,
   water: 0x7cc4ff,
+  smoke: 0xb8b4c8,
+  boss: 0xf5c542,
 };
 
 const OBJECTIVE_LABELS = {
   eliminateAll: 'Eliminate all guards',
   eliminateTargets: 'Eliminate the targets',
   collect: 'Collect the intel',
+  defeatBoss: 'Defeat the boss',
   exit: 'Reach the exit',
 };
 
@@ -143,11 +153,25 @@ export class Level extends EventEmitter {
       return laser;
     });
     for (const laser of this.lasers) this.hazardLayer.addChild(laser.view);
+    this.gates = data.gates.map((config) => {
+      const gate = new Gate(config);
+      gate.panel = panelsById.get(config.panel) ?? null;
+      this.tilemap.setGateTiles(gate.tiles, true);
+      this.hazardLayer.addChild(gate.view);
+      return gate;
+    });
     for (const panel of this.panels) this.hazardLayer.addChild(panel.view);
 
     // Boats patrol from the same list as guards and dogs, but they're security, not people to take down.
-    this.guards = data.guards.filter((g) => g.kind !== 'boat').map((config) => this._addGuard(config));
-    this.boats = data.guards.filter((g) => g.kind === 'boat').map((config) => this._addBoat(config));
+    // Units tied to a later boss phase wait off the map until the boss reaches it.
+    const present = data.guards.filter((g) => g.phase <= 1);
+    this.dormant = data.guards.filter((g) => g.phase > 1);
+    this.guards = present.filter((g) => g.kind !== 'boat').map((config) => this._addGuard(config));
+    this.boats = present.filter((g) => g.kind === 'boat').map((config) => this._addBoat(config));
+    this.boss = this.guards.find((g) => g.isBoss) ?? null;
+    this.bossInfo = this.boss ? { name: this.boss.name, maxHp: this.boss.maxHp } : null;
+    this.bossDefeated = false;
+    this.bossNotice = { text: '', timer: 0 };
     this.cameras = data.cameras.map((cameraConfig) => {
       const camera = this._addCamera(cameraConfig);
       camera.panel = panelsById.get(cameraConfig.panel) ?? null;
@@ -194,6 +218,7 @@ export class Level extends EventEmitter {
       fullAlarms: 0,
       radioChecksFailed: 0,
       bodiesSunk: 0,
+      bossHits: 0,
     };
     this.failed = false;
     this.completed = false;
@@ -234,6 +259,7 @@ export class Level extends EventEmitter {
       if (!this.failed) this._updateRadios(dt);
     }
     this.radioNotice.timer = Math.max(0, this.radioNotice.timer - dt);
+    this.bossNotice.timer = Math.max(0, this.bossNotice.timer - dt);
 
     for (const body of this.bodies) {
       if (body.carried) this._followCarrier(body, dt);
@@ -272,6 +298,12 @@ export class Level extends EventEmitter {
           status.total = this.intel.length;
           status.current = this.intel.filter((item) => item.collected).length;
           status.done = status.current === status.total;
+          break;
+        case 'defeatBoss':
+          status.label = `Defeat ${this.bossInfo.name}`;
+          status.total = this.bossInfo.maxHp;
+          status.current = this.bossDefeated ? this.bossInfo.maxHp : this.boss.hits;
+          status.done = this.bossDefeated;
           break;
         case 'exit':
           status.locked = !this.exitUnlocked;
@@ -372,6 +404,7 @@ export class Level extends EventEmitter {
     let target = null;
     let bestDist = TAKEDOWN_RANGE;
     for (const guard of this.guards) {
+      if (guard.hidden) continue;
       const dist = Math.hypot(guard.x - player.x, guard.y - player.y);
       if (dist <= bestDist) {
         bestDist = dist;
@@ -386,6 +419,16 @@ export class Level extends EventEmitter {
     const fromBehind = Math.abs(angleDiff(angleToPlayer, target.facing)) >= BACKSTAB_MIN_ANGLE;
     const silent = fromBehind && target.state !== GuardState.ALERT;
 
+    if (target.isBoss) {
+      if (!silent || target.hp > 1) {
+        this._hitBoss(target, silent);
+        return;
+      }
+      this.stats.bossHits++;
+      this.bossDefeated = true;
+      this.bossNotice = { text: `⚔ ${target.name} is down`, timer: BOSS_NOTICE_TIME };
+    }
+
     this._removeGuard(target);
     const body = new Body(target.x, target.y, target.facing, target.isDog);
     this.bodies.push(body);
@@ -398,6 +441,53 @@ export class Level extends EventEmitter {
     player.lockTimer = TAKEDOWN_LOCK_TIME;
     this.effects.burst(target.x, target.y, silent ? COLOR.silent : COLOR.alarm);
     if (!silent) this.emitNoise(target.x, target.y, LOUD_KILL_NOISE_RADIUS, true);
+  }
+
+  /**
+   * A clean stab from behind wounds the boss: it vanishes in smoke and turns up
+   * at its next post, while guards nearby come to see what the commotion was.
+   * Anything else it throws off, and the fight gets loud.
+   */
+  _hitBoss(boss, silent) {
+    const { player } = this;
+    player.facing = Math.atan2(boss.y - player.y, boss.x - player.x);
+    player.lockTimer = TAKEDOWN_LOCK_TIME;
+    if (!silent) {
+      const away = Math.atan2(player.y - boss.y, player.x - boss.x);
+      moveAndCollide(player, Math.cos(away) * BOSS_PARRY_PUSH, Math.sin(away) * BOSS_PARRY_PUSH, this.tilemap);
+      this.effects.burst(boss.x, boss.y, COLOR.alarm);
+      this.emitNoise(boss.x, boss.y, LOUD_KILL_NOISE_RADIUS, true);
+      boss.alertTo(player.x, player.y);
+      return;
+    }
+    this.stats.bossHits++;
+    const { x, y } = boss;
+    boss.wound();
+    this.effects.burst(x, y, COLOR.smoke);
+    this.effects.ring(x, y, 40, COLOR.smoke, 0.6);
+    this.emitNoise(x, y, BOSS_WOUND_NOISE_RADIUS, false, { color: COLOR.smoke });
+    this.bossNotice = { text: `⚔ ${boss.name} is wounded and slips away in the smoke`, timer: BOSS_NOTICE_TIME };
+  }
+
+  /** The boss turns up at its next post; whoever joins the fight for this phase arrives now. */
+  _onBossReappear(boss, phaseIndex) {
+    const phase = phaseIndex + 1;
+    const arriving = this.dormant.filter((g) => g.phase === phase);
+    this.dormant = this.dormant.filter((g) => g.phase !== phase);
+    for (const config of arriving) {
+      if (config.kind === 'boat') {
+        this.boats.push(this._addBoat(config));
+      } else {
+        this.guards.push(this._addGuard(config));
+        this.totalGuards++;
+      }
+    }
+    // Reinforcements draw above the player like everyone else.
+    this.entityLayer.addChild(this.player.view);
+    this.effects.ring(boss.x, boss.y, 60, COLOR.boss, 0.9);
+    const hint = boss.phases[phaseIndex].hint;
+    const extra = arriving.length ? ' Reinforcements have arrived.' : '';
+    this.bossNotice = { text: `⚔ ${boss.name} regroups${hint ? ` — ${hint}` : ''}.${extra}`, timer: BOSS_NOTICE_TIME };
   }
 
   /**
@@ -489,7 +579,8 @@ export class Level extends EventEmitter {
 
   _addGuard(config) {
     const isDog = config.kind === 'dog';
-    const guard = isDog ? new Dog({ tilemap: this.tilemap, ...config }) : new Guard({ tilemap: this.tilemap, ...config });
+    const Kind = isDog ? Dog : config.kind === 'boss' ? Boss : Guard;
+    const guard = new Kind({ tilemap: this.tilemap, ...config });
     this.coneLayer.addChild(guard.coneView);
     this.entityLayer.addChild(guard.view);
 
@@ -503,6 +594,7 @@ export class Level extends EventEmitter {
     guard.on('alert', () => this._onGuardSpottedPlayer(guard));
     guard.on('shoot', () => this._onGuardShoot(guard));
     guard.on('raiseAlarm', (_, panel) => this._raiseFullAlarm(guard, panel));
+    if (guard.isBoss) guard.on('reappear', (_, phaseIndex) => this._onBossReappear(guard, phaseIndex));
     return guard;
   }
 
@@ -586,6 +678,12 @@ export class Level extends EventEmitter {
     panel.targeted = false;
     for (const laser of this.lasers) if (laser.panel === panel) laser.disabled = true;
     for (const camera of this.cameras) if (camera.panel === panel) camera.disabled = true;
+    for (const gate of this.gates) {
+      if (gate.panel !== panel || !gate.unlock()) continue;
+      this.tilemap.setGateTiles(gate.tiles, false);
+      const mid = gate.tiles[Math.floor(gate.tiles.length / 2)];
+      this.effects.burst((mid.tx + 0.5) * TILE_SIZE, (mid.ty + 0.5) * TILE_SIZE, COLOR.hack);
+    }
     this.player.lockTimer = HACK_LOCK_TIME;
     this.effects.burst(panel.x, panel.y, COLOR.hack);
   }
@@ -919,13 +1017,19 @@ export class Level extends EventEmitter {
     return soonest < Infinity ? `📻 Radio check-in in ${Math.ceil(soonest)}s` : null;
   }
 
+  /** HUD line for the boss fight: what just happened, for a few seconds. */
+  bossStatus() {
+    return this.bossNotice.timer > 0 ? this.bossNotice.text : null;
+  }
+
   /** HUD hint for what E would do right now. */
   interactionHint() {
     if (this.finished || this.player.inTransit) return null;
     const pad = this.linkInReach();
     if (pad) return pad.link.kind === 'elevator' ? 'E — ride the elevator' : 'E — take the stairs';
     if (this.player.dragging) return this.waterInReach() ? 'E — sink the body' : null;
-    if (this.hackablePanel()) return 'E — disable alarm panel';
+    const panel = this.hackablePanel();
+    if (panel) return this.gates.some((g) => g.panel === panel && !g.open) ? 'E — hack the panel (opens a gate)' : 'E — disable alarm panel';
     return null;
   }
 
@@ -953,6 +1057,7 @@ export class Level extends EventEmitter {
       for (let j = i + 1; j < guards.length; j++) {
         const a = guards[i];
         const b = guards[j];
+        if (a.hidden || b.hidden) continue;
         let dx = b.x - a.x;
         let dy = b.y - a.y;
         let dist = Math.hypot(dx, dy);

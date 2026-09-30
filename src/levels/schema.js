@@ -56,8 +56,20 @@
  * don't count for any objective; no radio, never a target.
  * Deep water blocks walking but not sight or sound; a body dragged to its edge can
  * be sunk (E). Shallow water (",") is walkable but slow, splashes and washes scent.
- * Objectives: eliminateAll | eliminateTargets | collect (all intel) | exit (reach an
- * exit tile; always evaluated last, after the others are complete).
+ * A guard with "kind": "boss" is the chapter boss (one per level, needs the
+ * "defeatBoss" objective). Its "patrol" is phase 1; "phases" lists 2-4 more, each
+ * { "route", "patrol", "hint" }. Every silent takedown wounds it and it relocates to
+ * the start of the next phase's patrol ("hint" is shown to the player); the stab in
+ * the last phase finishes it. Other takedowns don't hurt it. "name" labels it.
+ *   { "kind": "boss", "name": "The Watchman", "patrol": [[5, 5]],
+ *     "phases": [{ "route": "pingpong", "patrol": [[20, 4], [26, 4]], "hint": "He fled north" }] }
+ * Any other guard, dog or boat can have "phase": N (2..the boss's phase count): it
+ * only turns up when the boss enters phase N.
+ * Gates are barred doors across a straight run of tiles, opened for good by
+ * hacking their panel. Closed, they block walking but not sight or sound:
+ *   "gates": [{ "x1": 10, "y1": 4, "x2": 10, "y2": 6, "panel": "A" }]
+ * Objectives: eliminateAll | eliminateTargets | collect (all intel) | defeatBoss |
+ * exit (reach an exit tile; always evaluated last, after the others are complete).
  */
 import { BIRD_PROXIMITY } from '../entities/wildlifeRules.js';
 import { GridMap, Tile, tileCenter } from '../world/tiles.js';
@@ -74,6 +86,7 @@ import {
   isWaterLeg,
 } from '../entities/boatRules.js';
 import { distanceToSegment, laserActiveAt } from '../entities/securityRules.js';
+import { BOSS_MAX_PHASES, BOSS_MIN_PHASES } from '../entities/bossRules.js';
 
 export const FORMAT_VERSION = 1;
 
@@ -91,12 +104,12 @@ export const LEGEND = Object.freeze({
   b: { tile: Tile.FLOOR, marker: 'wildlife', label: 'Birds' },
 });
 
-export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'collect', 'exit']);
+export const OBJECTIVES = Object.freeze(['eliminateAll', 'eliminateTargets', 'collect', 'defeatBoss', 'exit']);
 
 export const COMPASS = Object.freeze({ E: 0, SE: 45, S: 90, SW: 135, W: 180, NW: 225, N: 270, NE: 315 });
 
 const ROUTES = ['loop', 'pingpong'];
-export const GUARD_KINDS = Object.freeze(['guard', 'dog', 'boat']);
+export const GUARD_KINDS = Object.freeze(['guard', 'dog', 'boat', 'boss']);
 const BODY_HALF_SIZE = 10;
 const DEFAULT_TARGET_TIME = 90;
 const MIN_SIZE = 5;
@@ -150,6 +163,7 @@ function readLevel(json, errors) {
   const panelIds = new Set(panels.map((p) => p.id).filter(Boolean));
   const cameras = readCameras(json.cameras ?? [], map, panelIds, errors);
   const lasers = readLasers(json.lasers ?? [], map, panelIds, errors);
+  const gates = readGates(json.gates ?? [], map, panelIds, errors);
   const links = readLinks(json.links ?? [], map, errors);
   const objectives = readObjectives(json.objectives, tiles, guards, errors);
 
@@ -164,8 +178,41 @@ function readLevel(json, errors) {
     cameras,
     panels,
     lasers,
+    gates,
     links,
   };
+}
+
+function readGates(list, map, panelIds, errors) {
+  if (!Array.isArray(list)) {
+    errors.push('"gates" must be an array');
+    return [];
+  }
+  const gates = [];
+  list.forEach((gate, gi) => {
+    const label = `Gate ${gi + 1}`;
+    const { x1, y1, x2, y2 } = gate ?? {};
+    if (![x1, y1, x2, y2].every(Number.isInteger)) {
+      errors.push(`${label}: x1, y1, x2, y2 must be whole tile coordinates`);
+      return;
+    }
+    if (x1 !== x2 && y1 !== y2) {
+      errors.push(`${label} must be a straight horizontal or vertical run of tiles`);
+      return;
+    }
+    const tiles = [];
+    const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+    for (let i = 0; i <= steps; i++) {
+      const tx = x1 + Math.sign(x2 - x1) * i;
+      const ty = y1 + Math.sign(y2 - y1) * i;
+      if (map.isBlocked(tx, ty)) errors.push(`${label}: tile (${tx},${ty}) is a wall, deep water or off the map`);
+      tiles.push({ tx, ty });
+    }
+    if (gate.panel == null) errors.push(`${label} needs a "panel" id that opens it`);
+    const panel = readPanelLink(gate.panel, label, panelIds, errors);
+    gates.push({ tiles, panel });
+  });
+  return gates;
 }
 
 const LINK_KINDS = ['stairs', 'elevator'];
@@ -372,15 +419,41 @@ function readGuards(list, map, errors) {
       return;
     }
     const kind = guard.kind ?? 'guard';
-    if (!GUARD_KINDS.includes(kind)) errors.push(`${label}: kind must be "guard", "dog" or "boat"`);
+    if (!GUARD_KINDS.includes(kind)) errors.push(`${label}: kind must be "guard", "dog", "boat" or "boss"`);
     const onWater = kind === 'boat';
     const patrol = guard.patrol.map((wp, wi) => readWaypoint(wp, `${label} waypoint ${wi + 1}`, map, errors, onWater));
     if (patrol.includes(null)) return;
     const radio = guard.radio ?? null;
     if (radio !== null && (typeof radio !== 'string' || radio === '')) errors.push(`${label}: radio must be a channel name`);
-    if (kind !== 'guard' && radio !== null) errors.push(`${label}: only guards carry a radio`);
+    if (kind !== 'guard' && kind !== 'boss' && radio !== null) errors.push(`${label}: only guards and bosses carry a radio`);
     if (kind !== 'guard' && guard.target === true) errors.push(`${label}: only guards can be targets`);
-    const unit = { kind, route, target: guard.target === true, radio, patrol };
+    const unit = { kind, route, target: guard.target === true, radio, patrol, phase: 1 };
+    if (guard.phase != null) {
+      if (!Number.isInteger(guard.phase) || guard.phase < 1) errors.push(`${label}: phase must be a whole number >= 1`);
+      else if (kind === 'boss') errors.push(`${label}: a boss can't have a "phase"`);
+      else unit.phase = guard.phase;
+    }
+    if (kind === 'boss') {
+      unit.name = typeof guard.name === 'string' && guard.name ? guard.name : 'The Boss';
+      const extra = Array.isArray(guard.phases) ? guard.phases : [];
+      const total = extra.length + 1;
+      if (total < BOSS_MIN_PHASES || total > BOSS_MAX_PHASES) {
+        errors.push(`${label}: a boss needs ${BOSS_MIN_PHASES - 1}-${BOSS_MAX_PHASES - 1} "phases" after its first patrol`);
+      }
+      unit.phases = [];
+      extra.forEach((phase, pi) => {
+        const plabel = `${label} phase ${pi + 2}`;
+        const proute = phase?.route ?? 'loop';
+        if (!ROUTES.includes(proute)) errors.push(`${plabel}: route must be "loop" or "pingpong"`);
+        if (!Array.isArray(phase?.patrol) || phase.patrol.length === 0) {
+          errors.push(`${plabel}: needs at least one patrol waypoint`);
+          return;
+        }
+        const ppatrol = phase.patrol.map((wp, wi) => readWaypoint(wp, `${plabel} waypoint ${wi + 1}`, map, errors));
+        if (ppatrol.includes(null)) return;
+        unit.phases.push({ route: proute, patrol: ppatrol, hint: typeof phase.hint === 'string' ? phase.hint : null });
+      });
+    }
     if (kind === 'boat') {
       const sweep = guard.sweep ?? BOAT_DEFAULT_SWEEP;
       const sweepTime = guard.sweepTime ?? BOAT_DEFAULT_SWEEP_TIME;
@@ -432,6 +505,15 @@ function readObjectives(list, tiles, guards, errors) {
   if (list.includes('eliminateTargets') && !guards.some((g) => g.target)) {
     errors.push('The "eliminateTargets" objective needs at least one guard with "target": true');
   }
+  const bosses = guards.filter((g) => g.kind === 'boss');
+  if (bosses.length > 1) errors.push('A level can have only one boss');
+  if (list.includes('defeatBoss') && bosses.length === 0) errors.push('The "defeatBoss" objective needs a guard with "kind": "boss"');
+  if (bosses.length && !list.includes('defeatBoss')) errors.push('A level with a boss needs the "defeatBoss" objective');
+  const bossPhases = bosses.length ? bosses[0].phases.length + 1 : 1;
+  guards.forEach((g, gi) => {
+    if (g.phase > 1 && !bosses.length) errors.push(`Guard ${gi + 1}: "phase" only makes sense in a level with a boss`);
+    else if (g.phase > bossPhases) errors.push(`Guard ${gi + 1}: phase ${g.phase} is beyond the boss's ${bossPhases} phases`);
+  });
   const ordered = list.filter((o) => o !== 'exit');
   if (list.includes('exit')) ordered.push('exit');
   return ordered;
@@ -443,6 +525,25 @@ function checkPlayability(level, errors, warnings) {
   const { spawn } = level;
   const reachable = (p) => findPath(map, spawn.x, spawn.y, p.x, p.y, BODY_HALF_SIZE) !== null;
 
+  // Gates start closed: open each one whose panel can be reached, until nothing changes.
+  // Every later check runs with the gates the player can open already open.
+  const closed = new Set(level.gates);
+  for (const gate of closed) map.setGateTiles(gate.tiles, true);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const gate of closed) {
+      const panel = level.panels.find((p) => p.id === gate.panel);
+      if (!panel || !reachable(panel)) continue;
+      map.setGateTiles(gate.tiles, false);
+      closed.delete(gate);
+      changed = true;
+    }
+  }
+  for (const gate of closed) {
+    const { tx, ty } = gate.tiles[0];
+    errors.push(`Gate at (${tx},${ty}) can never be opened: its panel can't be reached`);
+  }
+
   for (const exit of level.exits) {
     if (!reachable(exit)) errors.push(`Exit at (${exit.tx},${exit.ty}) can't be reached from the spawn`);
   }
@@ -451,8 +552,9 @@ function checkPlayability(level, errors, warnings) {
   }
 
   const mustEliminate = (g) =>
-    g.kind !== 'boat' &&
-    (level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets')));
+    g.kind === 'boss' ||
+    (g.kind !== 'boat' &&
+      (level.objectives.includes('eliminateAll') || (g.target && level.objectives.includes('eliminateTargets'))));
 
   level.guards.forEach((guard, gi) => {
     const isDog = guard.kind === 'dog';
@@ -461,18 +563,28 @@ function checkPlayability(level, errors, warnings) {
     const { patrol } = guard;
     if (mustEliminate(guard) && !reachable(patrol[0])) errors.push(`${label} can't be reached, so it can't be eliminated`);
 
-    const legs = guard.route === 'loop' ? patrol.length : patrol.length - 1;
-    for (let i = 0; i < legs && patrol.length > 1; i++) {
-      const a = patrol[i];
-      const b = patrol[(i + 1) % patrol.length];
-      if (a.tx === b.tx && a.ty === b.ty) continue;
-      const next = ((i + 1) % patrol.length) + 1;
-      if (isBoat) {
-        if (!isWaterLeg(map, a, b)) errors.push(`${label}: the leg from waypoint ${i + 1} to ${next} leaves deep water`);
-      } else if (!findPath(map, a.x, a.y, b.x, b.y, BODY_HALF_SIZE)) {
-        warnings.push(`${label}: no walkable path from waypoint ${i + 1} to ${next}`);
+    const checkLegs = (route, points, name) => {
+      const legs = route === 'loop' ? points.length : points.length - 1;
+      for (let i = 0; i < legs && points.length > 1; i++) {
+        const a = points[i];
+        const b = points[(i + 1) % points.length];
+        if (a.tx === b.tx && a.ty === b.ty) continue;
+        const next = ((i + 1) % points.length) + 1;
+        if (isBoat) {
+          if (!isWaterLeg(map, a, b)) errors.push(`${name}: the leg from waypoint ${i + 1} to ${next} leaves deep water`);
+        } else if (!findPath(map, a.x, a.y, b.x, b.y, BODY_HALF_SIZE)) {
+          warnings.push(`${name}: no walkable path from waypoint ${i + 1} to ${next}`);
+        }
       }
-    }
+    };
+    checkLegs(guard.route, patrol, label);
+    (guard.phases ?? []).forEach((phase, pi) => {
+      const name = `${label} phase ${pi + 2}`;
+      if (!reachable(phase.patrol[0])) errors.push(`${name} starts where the player can't reach`);
+      checkLegs(phase.route, phase.patrol, name);
+    });
+    // Units that only turn up in a later boss phase aren't there at the start.
+    if (guard.phase > 1) return;
 
     const start = patrol[0];
     const facing = initialFacing(patrol);

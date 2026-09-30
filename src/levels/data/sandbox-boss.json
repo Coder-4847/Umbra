@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "id": "sandbox-boss",
+  "name": "Sandbox: Boss",
+  "chapter": 0,
+  "targetTime": 120,
+  "objectives": ["defeatBoss", "exit"],
+  "tiles": [
+    "##############################",
+    "#............#...............#",
+    "#.P..........#...............#",
+    "#............#...............#",
+    "#............................#",
+    "#............#...............#",
+    "#............#...............#",
+    "#............#.............E.#",
+    "##############################"
+  ],
+  "guards": [
+    {
+      "kind": "boss",
+      "name": "Test Boss",
+      "route": "pingpong",
+      "patrol": [
+        {"x": 17, "y": 2, "wait": 1},
+        {"x": 26, "y": 2, "wait": 1}
+      ],
+      "phases": [
+        {
+          "route": "pingpong",
+          "patrol": [
+            {"x": 17, "y": 6, "wait": 1},
+            {"x": 26, "y": 6, "wait": 1}
+          ],
+          "hint": "south side of the yard"
+        },
+        {
+          "route": "pingpong",
+          "patrol": [
+            {"x": 22, "y": 1, "wait": 1},
+            {"x": 22, "y": 7, "wait": 1}
+          ],
+          "hint": "middle of the yard"
+        }
+      ]
+    },
+    {
+      "phase": 2,
+      "route": "pingpong",
+      "patrol": [
+        {"x": 16, "y": 4, "wait": 1},
+        {"x": 16, "y": 7, "wait": 1}
+      ]
+    },
+    {
+      "phase": 3,
+      "kind": "dog",
+      "route": "pingpong",
+      "patrol": [
+        {"x": 27, "y": 1, "wait": 1},
+        {"x": 27, "y": 4, "wait": 1}
+      ]
+    }
+  ],
+  "panels": [
+    {"x": 8, "y": 6, "id": "A"}
+  ],
+  "gates": [
+    {"x1": 13, "y1": 4, "x2": 13, "y2": 4, "panel": "A"}
+  ]
+}

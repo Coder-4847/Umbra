@@ -80,6 +80,8 @@ function updateHud() {
   else if (level.alarmRunner) lines.push('⚠ A guard is running for the alarm!');
   const radio = level.radioStatus();
   if (radio) lines.push(radio);
+  const boss = level.bossStatus();
+  if (boss) lines.push(boss);
   const hint = level.interactionHint();
   if (hint) lines.push(hint);
   const text = [levelData.name, ...lines].join('\n');

@@ -22,6 +22,8 @@ export function tileCenter(tx, ty) {
  * Deep water can't be walked on but sight, sound and bullets cross it, so it
  * belongs to the floor around it: `isSolid` (walls) is for sight, `isBlocked`
  * (walls + deep water) for movement. Shallow water is walkable, slow and noisy.
+ * Closed gates are barred: they block movement like a wall but, like water, not
+ * sight or sound, so they don't split a floor either.
  */
 export class GridMap {
   constructor(cols, rows, grid) {
@@ -30,6 +32,18 @@ export class GridMap {
     this.grid = grid;
     /** Stairs/elevators: Map of tile index -> tile index, both directions. Used by pathfinding. */
     this.links = null;
+    /** Tile indices barred by closed gates (see setGateTiles). */
+    this.barred = null;
+  }
+
+  /** Marks tiles as barred (a closed gate) or clears them again (opened). */
+  setGateTiles(tiles, closed) {
+    this.barred ??= new Set();
+    for (const { tx, ty } of tiles) {
+      const index = ty * this.cols + tx;
+      if (closed) this.barred.add(index);
+      else this.barred.delete(index);
+    }
   }
 
   /** @param links {{ tx1, ty1, tx2, ty2 }[]} */
@@ -91,9 +105,10 @@ export class GridMap {
     return this.isSolid(Math.floor(x / TILE_SIZE), Math.floor(y / TILE_SIZE));
   }
 
-  /** Can't be walked through: walls and deep water. */
+  /** Can't be walked through: walls, deep water and closed gates. */
   isBlocked(tileX, tileY) {
     if (tileX < 0 || tileY < 0 || tileX >= this.cols || tileY >= this.rows) return true;
+    if (this.barred?.has(tileY * this.cols + tileX)) return true;
     const tile = this.grid[tileY][tileX];
     return tile === Tile.WALL || tile === Tile.WATER;
   }

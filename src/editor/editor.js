@@ -42,6 +42,8 @@ const TOOL_BY_ID = Object.fromEntries(TOOLS.map((t) => [t.id, t]));
 const PAINT_TOOLS = new Set(['wall', 'floor', 'bush', 'shadow', 'snow', 'water', 'shallow']);
 // Tools that place a patrolling unit; the tool id is the unit's kind.
 const UNIT_TOOLS = new Set(['guard', 'dog', 'boat']);
+// Guard kinds other than the default one; bosses are set in the panel, not placed with a tool.
+const SPECIAL_KINDS = ['dog', 'boat', 'boss'];
 const TOGGLE_MARKERS = { exit: 'E', intel: 'i', birds: 'b' };
 
 const TILE_COLORS = {
@@ -58,6 +60,8 @@ const COLOR = {
   target: '#e5625e',
   dog: '#c08552',
   boat: '#c9d1dc',
+  boss: '#f5c542',
+  gate: '#9aa1b5',
   boatLight: 'rgba(230, 240, 255, 0.16)',
   boatLightFaint: 'rgba(230, 240, 255, 0.06)',
   scent: 'rgba(155, 225, 93, 0.10)',
@@ -108,7 +112,7 @@ function blankDoc(cols = 40, rows = 28) {
     Array.from({ length: cols }, (_, x) => (x === 0 || y === 0 || x === cols - 1 || y === rows - 1 ? '#' : '.')),
   );
   tiles[2][2] = 'P';
-  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [], panels: [], lasers: [], links: [] };
+  return { id: '', name: '', chapter: 1, targetTime: 90, objectives: ['eliminateAll'], tiles, guards: [], cameras: [], panels: [], lasers: [], links: [], gates: [] };
 }
 
 function docFromJson(json) {
@@ -120,7 +124,11 @@ function docFromJson(json) {
     objectives: Array.isArray(json.objectives) ? [...json.objectives] : [],
     tiles: (json.tiles ?? []).map((row) => [...row]),
     guards: (json.guards ?? []).map((g) => ({
-      kind: g.kind === 'dog' || g.kind === 'boat' ? g.kind : undefined,
+      kind: SPECIAL_KINDS.includes(g.kind) ? g.kind : undefined,
+      name: g.name,
+      phase: g.phase,
+      // Boss phases after the first aren't editable on the canvas yet; they round-trip as-is.
+      phases: g.phases ? JSON.parse(JSON.stringify(g.phases)) : undefined,
       sweep: g.sweep,
       sweepTime: g.sweepTime,
       route: g.route ?? 'loop',
@@ -134,6 +142,7 @@ function docFromJson(json) {
     panels: (json.panels ?? []).map((p) => ({ ...p })),
     lasers: (json.lasers ?? []).map((l) => ({ ...l })),
     links: (json.links ?? []).map((l) => ({ ...l })),
+    gates: (json.gates ?? []).map((gate) => ({ ...gate })),
   };
 }
 
@@ -147,13 +156,16 @@ function jsonFromDoc(doc) {
     objectives: doc.objectives,
     tiles: doc.tiles.map((row) => row.join('')),
     guards: doc.guards.map((g) => ({
-      kind: g.kind === 'dog' || g.kind === 'boat' ? g.kind : undefined,
+      kind: SPECIAL_KINDS.includes(g.kind) ? g.kind : undefined,
+      name: g.kind === 'boss' ? g.name || undefined : undefined,
+      phase: g.kind !== 'boss' && g.phase > 1 ? g.phase : undefined,
       route: g.route,
       sweep: g.kind === 'boat' ? g.sweep : undefined,
       sweepTime: g.kind === 'boat' ? g.sweepTime : undefined,
       target: g.target || undefined,
       radio: g.radio || undefined,
       patrol: g.patrol.map(({ x, y, wait, look }) => ({ x, y, wait: wait || undefined, look: look ?? undefined })),
+      phases: g.kind === 'boss' ? g.phases : undefined,
     })),
     cameras: doc.cameras.length
       ? doc.cameras.map(({ x, y, look, sweep, sweepTime, pause, panel }) => ({
@@ -170,6 +182,7 @@ function jsonFromDoc(doc) {
     links: doc.links.length
       ? doc.links.map(({ x1, y1, x2, y2, kind }) => ({ x1, y1, x2, y2, kind: kind === 'elevator' ? kind : undefined }))
       : undefined,
+    gates: doc.gates?.length ? doc.gates.map(({ x1, y1, x2, y2, panel }) => ({ x1, y1, x2, y2, panel })) : undefined,
   };
 }
 
@@ -941,6 +954,42 @@ function drawCones(z) {
 }
 
 function drawGuards(z) {
+  state.doc.guards.forEach((guard) => {
+    for (const phase of guard.phases ?? []) {
+      const pts = (phase.patrol ?? []).map((wp) => (Array.isArray(wp) ? { x: wp[0], y: wp[1] } : wp));
+      ctx.strokeStyle = COLOR.boss;
+      ctx.fillStyle = COLOR.boss;
+      ctx.globalAlpha = 0.55;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      pts.forEach((wp, i) => (i === 0 ? ctx.moveTo((wp.x + 0.5) * z, (wp.y + 0.5) * z) : ctx.lineTo((wp.x + 0.5) * z, (wp.y + 0.5) * z)));
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (pts[0]) {
+        ctx.beginPath();
+        ctx.arc((pts[0].x + 0.5) * z, (pts[0].y + 0.5) * z, z * 0.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
+  });
+  for (const gate of state.doc.gates ?? []) {
+    const x0 = Math.min(gate.x1, gate.x2);
+    const y0 = Math.min(gate.y1, gate.y2);
+    const w = Math.abs(gate.x2 - gate.x1) + 1;
+    const h = Math.abs(gate.y2 - gate.y1) + 1;
+    ctx.strokeStyle = COLOR.gate;
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x0 * z + 2, y0 * z + 2, w * z - 4, h * z - 4);
+    for (let i = 0; i < w * 4; i++) {
+      const x = x0 * z + ((i + 0.5) * z) / 4;
+      ctx.beginPath();
+      ctx.moveTo(x, y0 * z + 3);
+      ctx.lineTo(x, (y0 + h) * z - 3);
+      ctx.stroke();
+    }
+  }
   state.doc.guards.forEach((guard, gi) => {
     const selected = gi === state.sel.guard;
     const color = COLOR[guard.kind] ?? (guard.target ? COLOR.target : COLOR.guard);
@@ -1283,6 +1332,8 @@ function renderPanel() {
           <label>Pass time (s) <input type="number" min="0.5" step="0.5" data-guard="sweepTime" value="${guard.sweepTime ?? ''}" placeholder="${BOAT_DEFAULT_SWEEP_TIME}"></label>
         </div>
         <span style="color:var(--muted)">Sails its route over deep water; the searchlight swings around its heading and acts like a camera. Can't be taken down.</span>`,
+    boss: () => `<label>Name <input data-guard="name" value="${esc(guard.name ?? '')}" placeholder="The Boss"></label>
+        <span style="color:var(--muted)">This patrol is phase 1. Takes one silent stab per phase (${(guard.phases?.length ?? 0) + 1} phases); later phases (dashed gold) are edited in the JSON for now.</span>`,
   };
   const guardSection = guard
     ? `<section>
@@ -1290,7 +1341,7 @@ function renderPanel() {
         <div class="row">
           <label>Kind
             <select data-guard="kind">
-              ${['guard', 'dog', 'boat'].map((k) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${k}</option>`).join('')}
+              ${['guard', 'dog', 'boat', 'boss'].map((k) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${k}</option>`).join('')}
             </select>
           </label>
           <label>Route
@@ -1401,6 +1452,7 @@ function onPanelChange(e) {
     const guard = doc.guards[state.sel.guard];
     if (el.dataset.guard === 'route') guard.route = el.value;
     else if (el.dataset.guard === 'radio') guard.radio = el.value.trim() || undefined;
+    else if (el.dataset.guard === 'name') guard.name = el.value.trim() || undefined;
     else if (el.dataset.guard === 'sweep' || el.dataset.guard === 'sweepTime') {
       guard[el.dataset.guard] = el.value === '' ? undefined : Number(el.value);
     } else if (el.dataset.guard === 'kind') {

@@ -35,6 +35,12 @@ class AudioEngine {
     };
     globalThis.addEventListener('keydown', unlock);
     globalThis.addEventListener('pointerdown', unlock);
+    // A phone keeps a background tab's audio running: go quiet while the page is hidden.
+    globalThis.document?.addEventListener('visibilitychange', () => {
+      if (!this.ctx) return;
+      if (document.hidden) this.ctx.suspend();
+      else this.ctx.resume();
+    });
   }
 
   _create(Ctx) {

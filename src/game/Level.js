@@ -22,6 +22,10 @@ import { AlarmPanel } from '../entities/AlarmPanel.js';
 import { PANEL_REACH } from '../entities/securityRules.js';
 import { angleDiff } from '../core/math.js';
 
+// Pixi keeps a Graphics' geometry (its context) and a Text's texture alive unless told to drop them:
+// `{ children: true }` alone leaks the whole tile map on every restart or level change.
+const DESTROY_ALL = { children: true, context: true, texture: true, style: true };
+
 const TAKEDOWN_RANGE = 36;
 // Takedown is silent when the player is at least this far off the guard's facing (i.e. behind it).
 const BACKSTAB_MIN_ANGLE = (95 * Math.PI) / 180;
@@ -597,7 +601,7 @@ export class Level extends EventEmitter {
     const body = player.dragging;
     player.dragging = null;
     this.bodies.splice(this.bodies.indexOf(body), 1);
-    body.view.destroy();
+    body.view.destroy(DESTROY_ALL);
     this.stats.bodiesSunk++;
     player.lockTimer = SINK_LOCK_TIME;
     this.effects.burst(water.x, water.y, COLOR.water);
@@ -652,8 +656,8 @@ export class Level extends EventEmitter {
     guard.kill();
     guard.removeAllListeners();
     this.guards.splice(this.guards.indexOf(guard), 1);
-    guard.view.destroy({ children: true });
-    guard.coneView.destroy();
+    guard.view.destroy(DESTROY_ALL);
+    guard.coneView.destroy(DESTROY_ALL);
   }
 
   /**
@@ -1148,6 +1152,6 @@ export class Level extends EventEmitter {
     for (const camera of this.cameras) camera.removeAllListeners();
     for (const boat of this.boats) boat.removeAllListeners();
     this.removeAllListeners();
-    this.root.destroy({ children: true });
+    this.root.destroy(DESTROY_ALL);
   }
 }

@@ -423,6 +423,13 @@ async function boot() {
 
 await boot();
 
+// Switching apps or tabs mid-level: come back to the pause menu, not to a guard already aiming.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && scene === 'play' && level && !level.finished && !loading && !levelSelect.isOpen) {
+    levelSelect.open(levelData.id, { home: true });
+  }
+});
+
 game.onUpdate((delta) => {
   touch.setVisible(scene === 'play' && input.activeMode === 'touch' && !levelSelect.isOpen);
   if (!level || loading) return;

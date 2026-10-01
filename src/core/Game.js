@@ -17,7 +17,8 @@ export class Game {
     await this.app.init({
       resizeTo: window,
       backgroundColor: 0x0b0b10,
-      antialias: true,
+      // On dense screens (phones) the extra pixels already smooth the edges; MSAA there only costs GPU time.
+      antialias: (window.devicePixelRatio || 1) < 2,
       resolution: Math.min(window.devicePixelRatio || 1, 2),
       autoDensity: true,
     });

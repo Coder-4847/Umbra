@@ -27,13 +27,13 @@
     {
       "route": "pingpong",
       "patrol": [
-        {"x": 14, "y": 7, "wait": 1},
-        {"x": 14, "y": 9, "wait": 1}
+        {"x": 22, "y": 3, "wait": 1},
+        {"x": 22, "y": 12, "wait": 1}
       ]
     }
   ],
   "cameras": [
-    {"x": 14, "y": 2, "look": "S", "sweep": 0},
-    {"x": 14, "y": 13, "look": "N", "sweep": 0}
+    {"x": 14, "y": 2, "look": "S", "sweep": 90, "sweepTime": 4, "pause": 1.5},
+    {"x": 14, "y": 13, "look": "N", "sweep": 90, "sweepTime": 4, "pause": 1.5}
   ]
 }

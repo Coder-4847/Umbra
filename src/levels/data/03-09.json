@@ -73,7 +73,7 @@
   "cameras": [
     {"x": 6, "y": 13, "look": "E", "sweep": 90, "sweepTime": 3, "pause": 1},
     {"x": 22, "y": 2, "look": "S", "sweep": 0},
-    {"x": 32, "y": 5, "look": "W", "sweep": 70, "sweepTime": 3, "pause": 1},
+    {"x": 31, "y": 4, "look": "W", "sweep": 70, "sweepTime": 3, "pause": 1},
     {"x": 15, "y": 20, "look": "N", "sweep": 0}
   ]
 }

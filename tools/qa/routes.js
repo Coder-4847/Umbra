@@ -18,7 +18,7 @@
 
 import { Level } from '/src/game/Level.js';
 import { loadLevel } from '/src/levels/index.js';
-import { parseLevel } from '/src/levels/schema.js';
+import { parseLevel, validateLevel } from '/src/levels/schema.js';
 import { hasLineOfSight } from '/src/world/raycast.js';
 import { isBoxClear } from '/src/world/collision.js';
 import { TILE_SIZE } from '/src/world/tiles.js';
@@ -70,9 +70,9 @@ const inputStub = () => ({
 class Planner {
   constructor(data, opts = {}) {
     this.data = data;
-    this.opts = { budget: 60, timeMs: 25000, enough: 0.8, hacks: false, tier: 'safe', ...opts };
+    this.opts = { budget: 60, timeMs: 25000, enough: 0.8, hacks: false, tier: 'safe', horizonFactor: 2.4, ...opts };
     this.tier = TIERS[this.opts.tier];
-    this.horizon = Math.min(14400, Math.ceil((data.targetTime * 2.4 * 60) / FPL) * FPL);
+    this.horizon = Math.min(14400, Math.ceil((data.targetTime * this.opts.horizonFactor * 60) / FPL) * FPL);
     this.layers = this.horizon / FPL;
     this._record();
     const tm = (this.tm = this.ghost.tilemap);
@@ -652,4 +652,102 @@ export async function playKeyboard(id, opts = {}) {
   const s = lvl().stats;
   const ok = lvl().completed && s.detections === 0 && s.bodiesDiscovered === 0 && lvl().player.hp === 3;
   return { id, ok, completed: lvl().completed, hp: lvl().player.hp, detections: s.detections, bodiesDiscovered: s.bodiesDiscovered, kills: `${s.stealthKills}/${s.kills}`, elapsed: +s.elapsed.toFixed(2), planned: +result.seconds.toFixed(1) };
+}
+
+/** Every single edit worth trying on a level, as { label, json } in order of how small the change is. */
+function* mutations(base, kinds) {
+  const rows = base.tiles;
+  const floor = (x, y) => y > 0 && y < rows.length - 1 && x > 0 && x < rows[y].length - 1 && '.%:*'.includes(rows[y][x]);
+  const DIRS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
+  const patrolTiles = new Set();
+  for (const g of base.guards ?? []) for (const p of g.patrol ?? []) patrolTiles.add(Array.isArray(p) ? `${p[0]},${p[1]}` : `${p.x},${p.y}`);
+  const sweepOf = (c) => c.sweep ?? 0;
+  if (kinds.includes('camSweep')) {
+    for (const [i, c] of (base.cameras ?? []).entries()) {
+      for (const [sweep, sweepTime, pause] of [[60, 3, 1], [90, 3, 1], [90, 4, 1.5], [60, 4, 1.5], [0, 3, 1]]) {
+        if (sweep === sweepOf(c)) continue;
+        const j = structuredClone(base);
+        Object.assign(j.cameras[i], { sweep, sweepTime, pause });
+        yield { label: `camera ${i} sweep ${sweep}/${sweepTime}s/pause ${pause}`, json: j };
+      }
+    }
+  }
+  if (kinds.includes('camLook')) {
+    for (const [i, c] of (base.cameras ?? []).entries()) {
+      for (const look of DIRS) {
+        if (look === c.look) continue;
+        const j = structuredClone(base);
+        j.cameras[i].look = look;
+        yield { label: `camera ${i} look ${look}`, json: j };
+      }
+    }
+  }
+  if (kinds.includes('camMove')) {
+    for (const r of [1, 2, 3]) {
+      for (const [i, c] of (base.cameras ?? []).entries()) {
+        for (let dy = -r; dy <= r; dy++) {
+          for (let dx = -r; dx <= r; dx++) {
+            if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+            const x = c.x + dx;
+            const y = c.y + dy;
+            if (!floor(x, y)) continue;
+            const j = structuredClone(base);
+            j.cameras[i].x = x;
+            j.cameras[i].y = y;
+            yield { label: `camera ${i} move to ${x},${y}`, json: j };
+          }
+        }
+      }
+    }
+  }
+  if (kinds.includes('guardMove')) {
+    for (const r of [1, 2, 3]) {
+      for (const [gi, g] of (base.guards ?? []).entries()) {
+        for (const [pi, p] of g.patrol.entries()) {
+          const px = Array.isArray(p) ? p[0] : p.x;
+          const py = Array.isArray(p) ? p[1] : p.y;
+          for (const [dx, dy] of [[r, 0], [-r, 0], [0, r], [0, -r]]) {
+            if (!floor(px + dx, py + dy)) continue;
+            const j = structuredClone(base);
+            const q = j.guards[gi].patrol[pi];
+            if (Array.isArray(q)) { q[0] += dx; q[1] += dy; } else { q.x += dx; q.y += dy; }
+            yield { label: `guard ${gi} waypoint ${pi} by ${dx},${dy}`, json: j };
+          }
+        }
+      }
+    }
+  }
+  if (kinds.includes('wall')) {
+    for (let y = 1; y < rows.length - 1; y++) {
+      for (let x = 1; x < rows[y].length - 1; x++) {
+        if (rows[y][x] !== '.' || patrolTiles.has(`${x},${y}`)) continue;
+        const j = structuredClone(base);
+        j.tiles[y] = rows[y].slice(0, x) + '#' + rows[y].slice(x + 1);
+        yield { label: `wall at ${x},${y}`, json: j };
+      }
+    }
+  }
+}
+
+/**
+ * Tries single edits (see `mutations`) on a level that has no route and reports those after which a safe
+ * route exists. kinds: any of 'camSweep', 'camLook', 'camMove', 'guardMove', 'wall'. Edits that break
+ * validation are skipped. `skip` resumes a long search. The level file is never written.
+ */
+export async function fixSearch(id, { kinds = ['camSweep', 'camLook', 'camMove', 'guardMove', 'wall'], want = 8, tier = 'safe', timeMs = 100000, skip = 0 } = {}) {
+  const base = structuredClone((await import(`/src/levels/data/${id}.json`)).default);
+  const t0 = performance.now();
+  const hits = [];
+  let n = 0;
+  for (const m of mutations(base, kinds)) {
+    if (n++ < skip) continue;
+    if (performance.now() - t0 > timeMs || hits.length >= want) return { hits, next: n - 1, done: false };
+    const v = validateLevel(m.json);
+    if (v.errors.length || v.warnings.length) continue;
+    const r = await plan(id, { json: m.json, tier, budget: 40, timeMs: 6000, horizonFactor: 1.1 });
+    if (r.error) continue;
+    const real = replay(parseLevel(structuredClone(m.json)), r);
+    if (real.completed && real.detections === 0 && real.bodiesDiscovered === 0 && real.hp === 3) hits.push({ label: m.label, seconds: real.elapsed });
+  }
+  return { hits, next: n, done: true };
 }

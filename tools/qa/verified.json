@@ -109,5 +109,62 @@
     "seconds": 17.43,
     "target": 120,
     "plan": "stab2@0.7 stab0@3.7 stab5@7.1 stab1@8.1 stab4@10.1 stab3@14.1"
+  },
+  "03-01": {
+    "tier": "safe",
+    "seconds": 5.22,
+    "target": 50,
+    "plan": ""
+  },
+  "03-02": {
+    "tier": "safe",
+    "seconds": 6.4,
+    "target": 65,
+    "plan": "stab0@5.6",
+    "fix": "no route existed: two fixed cameras covered every lane across the middle room and the guard patrolled inside it. Guard moved to the east room (x=22, y 3-12); both cameras now sweep 90 degrees (4s, pause 1.5s) so there are timing windows"
+  },
+  "03-03": {
+    "tier": "safe",
+    "seconds": 15.17,
+    "target": 70,
+    "plan": "intel0@5.2 intel1@10.5"
+  },
+  "03-04": {
+    "tier": "safe",
+    "seconds": 12.93,
+    "target": 80,
+    "plan": "stab0@3.9 stab1@11.9"
+  },
+  "03-05": {
+    "tier": "safe",
+    "seconds": 15.47,
+    "target": 90,
+    "plan": "stab0@12.0",
+    "fix": "route only existed with margins of ~3px / 1.5 degrees: camera 0 moved from (12,3) to (13,3)"
+  },
+  "03-06": {
+    "tier": "safe",
+    "seconds": 7.73,
+    "target": 95,
+    "plan": "stab0@4.3"
+  },
+  "03-07": {
+    "tier": "safe",
+    "seconds": 32.77,
+    "target": 105,
+    "plan": "intel2@6.4 intel0@12.8 intel1@22.4"
+  },
+  "03-08": {
+    "tier": "safe",
+    "seconds": 12.68,
+    "target": 115,
+    "plan": "stab0@0.7 stab1@5.2 stab2@6.3 stab3@8.9"
+  },
+  "03-09": {
+    "tier": "safe",
+    "seconds": 29.03,
+    "target": 130,
+    "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab4@17.3 stab2@26.1",
+    "fix": "route only existed with tight margins (36s): camera 2 moved from (32,5) to (31,4). Also played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
   }
 }

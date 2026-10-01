@@ -66,6 +66,9 @@ const FX = {
   spotted: { shake: 0.15 },
 };
 const MAX_SHAKE = 7; // px at full trauma
+// Screen px kept free of map at the top (the HUD panel) and, in touch mode, at the bottom (the buttons).
+const HUD_CLEARANCE = 150;
+const TOUCH_CLEARANCE = 110;
 let trauma = 0;
 let hitStop = 0;
 
@@ -354,8 +357,8 @@ function updateDemo(delta) {
   }
   demoClock += delta;
   const { tilemap } = level;
-  const reachX = Math.max(0, tilemap.pixelWidth - game.app.screen.width * 0.5) / 2;
-  const reachY = Math.max(0, tilemap.pixelHeight - game.app.screen.height * 0.6) / 2;
+  const reachX = Math.max(0, tilemap.pixelWidth - game.viewWidth * 0.5) / 2;
+  const reachY = Math.max(0, tilemap.pixelHeight - game.viewHeight * 0.6) / 2;
   if (!visual.reducedMotion) {
     demoTarget.x = tilemap.pixelWidth / 2 + Math.sin(demoClock * 0.11) * reachX;
     demoTarget.y = tilemap.pixelHeight / 2 + Math.sin(demoClock * 0.17 + 1) * reachY;
@@ -365,7 +368,7 @@ function updateDemo(delta) {
   camera.update(delta);
   camera.applyTo(game.world);
   // The menu sits on the left, so the map is shown right of centre.
-  game.world.pivot.x -= game.app.screen.width * 0.16;
+  game.world.pivot.x -= game.viewWidth * 0.16;
 }
 
 // --- HUD -------------------------------------------------------------------------
@@ -476,16 +479,23 @@ game.onUpdate((delta) => {
   if (!level.finished) for (const guard of level.guards) tension = Math.max(tension, guard.state === 'alert' ? 1 : guard.state === 'suspicious' ? 0.5 : 0);
   audio.setTension(level.finished ? 0 : tension);
 
+  // The camera may show empty space past the map's top edge (and its bottom edge with touch controls),
+  // so a spawn or an exit in a corner is never underneath the HUD or the buttons.
   const { tilemap } = level;
-  const halfW = game.app.screen.width / 2;
-  const halfH = game.app.screen.height / 2;
-  const fitsX = tilemap.pixelWidth > game.app.screen.width;
-  const fitsY = tilemap.pixelHeight > game.app.screen.height;
+  const padTop = HUD_CLEARANCE / game.zoom;
+  const padBottom = input.activeMode === 'touch' ? TOUCH_CLEARANCE / game.zoom : 0;
+  const halfW = game.viewWidth / 2;
+  const halfH = game.viewHeight / 2;
+  const scrollsX = tilemap.pixelWidth > game.viewWidth;
+  const scrollsY = tilemap.pixelHeight + padTop + padBottom > game.viewHeight;
+  // A map small enough to sit clear of both stays centred; otherwise it is centred in the space between them.
+  const roomy = tilemap.pixelHeight + 2 * Math.max(padTop, padBottom) <= game.viewHeight;
+  const midY = roomy ? tilemap.pixelHeight / 2 : (tilemap.pixelHeight - padTop + padBottom) / 2;
   camera.bounds = {
-    minX: fitsX ? halfW : tilemap.pixelWidth / 2,
-    maxX: fitsX ? tilemap.pixelWidth - halfW : tilemap.pixelWidth / 2,
-    minY: fitsY ? halfH : tilemap.pixelHeight / 2,
-    maxY: fitsY ? tilemap.pixelHeight - halfH : tilemap.pixelHeight / 2,
+    minX: scrollsX ? halfW : tilemap.pixelWidth / 2,
+    maxX: scrollsX ? tilemap.pixelWidth - halfW : tilemap.pixelWidth / 2,
+    minY: scrollsY ? halfH - padTop : midY,
+    maxY: scrollsY ? tilemap.pixelHeight - halfH + padBottom : midY,
   };
   camera.update(delta);
   camera.applyTo(game.world);

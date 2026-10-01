@@ -1,6 +1,10 @@
 import { Application, Container } from 'pixi.js';
 import { InputManager } from './InputManager.js';
 
+// World pixels that must fit across the screen's shorter side, and how far the camera may zoom out to get there.
+const MIN_VIEW_SPAN = 540;
+const MIN_ZOOM = 0.6;
+
 /**
  * Owns the PixiJS application, the responsive canvas, the input manager,
  * and the update loop. Scene/level logic hooks into `world` and `update`.
@@ -11,6 +15,7 @@ export class Game {
     this.world = new Container();
     this.input = new InputManager();
     this.updateCallbacks = [];
+    this.zoom = 1;
   }
 
   async init(container) {
@@ -51,7 +56,20 @@ export class Game {
   }
 
   _onResize() {
-    this.world.position.set(this.app.screen.width / 2, this.app.screen.height / 2);
+    const { width, height } = this.app.screen;
+    // Small screens zoom out: whoever can see the player (sight reaches ~300px when alert) has to be on screen.
+    this.zoom = Math.min(1, Math.max(MIN_ZOOM, Math.min(width, height) / MIN_VIEW_SPAN));
+    this.world.scale.set(this.zoom);
+    this.world.position.set(width / 2, height / 2);
+  }
+
+  /** Size of the visible part of the world, in world pixels. */
+  get viewWidth() {
+    return this.app.screen.width / this.zoom;
+  }
+
+  get viewHeight() {
+    return this.app.screen.height / this.zoom;
   }
 
   destroy() {

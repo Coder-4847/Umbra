@@ -691,9 +691,11 @@ kbd {
   white-space: pre;
 }
 
+/* Pinned to the screen, not the scrolling list: on a phone they are the only way out of the menu. */
 .ls-close,
 .ls-home {
-  position: absolute;
+  position: fixed;
+  z-index: 1;
   top: 16px;
   height: 36px;
   border: 1px solid var(--line);
@@ -1161,6 +1163,19 @@ kbd {
   .overlay-card {
     padding: 20px 16px 18px;
   }
+
+  /* Leave the top-right corner to the touch buttons (restart, menu). */
+  .hud {
+    min-width: 0;
+    max-width: calc(100vw - 136px);
+  }
+}
+
+/* The narrowest phones (320px): three tabs side by side need tighter padding. */
+@media (max-width: 400px) {
+  .ls-tab {
+    padding: 5px 8px 3px;
+  }
 }
 
 @media (max-height: 520px) {
@@ -1183,5 +1198,34 @@ kbd {
 
   .title-card {
     bottom: 54px;
+  }
+
+  /* Phones held sideways: the result card has to fit a ~360px tall screen. */
+  .overlay {
+    align-items: safe center;
+    overflow-y: auto;
+    padding: 10px;
+  }
+
+  .overlay-card {
+    gap: 7px;
+    padding: 14px 24px 16px;
+  }
+
+  .overlay-title {
+    font-size: clamp(30px, 13vh, 56px);
+  }
+
+  .overlay-stars {
+    font-size: clamp(26px, 10vh, 40px);
+  }
+
+  .overlay-lines {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+
+  .overlay-actions {
+    margin-top: 4px;
   }
 }

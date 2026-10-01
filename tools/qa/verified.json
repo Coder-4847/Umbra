@@ -166,5 +166,61 @@
     "target": 130,
     "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab4@17.3 stab2@26.1",
     "fix": "route only existed with tight margins (36s): camera 2 moved from (32,5) to (31,4). Also played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
+  },
+  "04-01": {
+    "tier": "safe",
+    "seconds": 5.75,
+    "target": 50,
+    "plan": "stab0@2.3"
+  },
+  "04-02": {
+    "tier": "safe",
+    "seconds": 6.02,
+    "target": 70,
+    "plan": "stab0@2.7"
+  },
+  "04-03": {
+    "tier": "safe",
+    "seconds": 7.08,
+    "target": 80,
+    "plan": "stab0@2.3"
+  },
+  "04-04": {
+    "tier": "safe",
+    "seconds": 11.07,
+    "target": 85,
+    "plan": "stab0@5.1 intel1@6.4 intel0@8.7",
+    "fix": "collect-only level; no zero-exposure route exists without killing the guard (its beat spans the field and returns within the 14s print life), so the route silently takes it out first"
+  },
+  "04-05": {
+    "tier": "safe",
+    "seconds": 9.75,
+    "target": 95,
+    "plan": "stab0@6.5"
+  },
+  "04-06": {
+    "tier": "safe",
+    "seconds": 8.27,
+    "target": 105,
+    "plan": "stab0@0.7 stab2@3.3 stab1@7.2"
+  },
+  "04-07": {
+    "tier": "safe",
+    "seconds": 14.82,
+    "target": 115,
+    "plan": "stab0@5.2 stab1@8.3 stab2@10.5"
+  },
+  "04-08": {
+    "tier": "safe",
+    "seconds": 9.47,
+    "target": 130,
+    "plan": "stab0@0.7 stab3@2.8 stab2@4.5 stab1@8.7"
+  },
+  "04-09": {
+    "tier": "safe",
+    "seconds": 19.6,
+    "target": 145,
+    "plan": "stab0@0.7 stab3@3.1 stab4@7.2 stab2@10.4 stab1@15.3",
+    "fix": "renamed Last Watch -> Frostline (05-09 keeps Last Watch). Also played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
   }
 }

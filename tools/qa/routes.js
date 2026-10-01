@@ -93,6 +93,7 @@ class Planner {
       this.snow[c] = [[0, 0], ...OFFS].some(([ox, oy]) => tm.isSnowAtWorld(x + ox, y + oy)) ? 1 : 0;
       this.bird[c] = data.wildlife.some((b) => Math.hypot(b.x - x, b.y - y) <= BIRD_PROXIMITY + 8) ? 1 : 0;
     }
+    this.hasSnow = this.snow.some((v) => v);
     this.ctxs = new Map();
     this.snowSeenCache = new Map();
     this.laserCache = new Map();
@@ -185,11 +186,11 @@ class Planner {
     return list;
   }
 
-  snowBlocked(e, c, k) {
+  snowBlocked(e, c, k, cut = Infinity) {
     const list = this.snowSeen(e, c);
     if (!list.length) return false;
     const lo = k * FPL;
-    const hi = lo + FPL + PRINT_LIFE_FRAMES;
+    const hi = Math.min(lo + FPL + PRINT_LIFE_FRAMES, cut);
     let a = 0;
     let b = list.length;
     while (a < b) {
@@ -218,8 +219,8 @@ class Planner {
 
   // --- contexts: which enemies are alive / which panels are hacked ----------------------------
 
-  ctx(alive, hacked) {
-    const key = alive.join('') + '|' + [...hacked].sort().join(',');
+  ctx(alive, hacked, cut = null) {
+    const key = alive.join('') + '|' + [...hacked].sort().join(',') + (cut ? `|cut${cut.gi}@${cut.tk}` : '');
     let ctx = this.ctxs.get(key);
     if (!ctx) {
       ctx = {
@@ -227,6 +228,7 @@ class Planner {
         alive,
         camOn: this.C.map((cam) => !(cam.panel && hacked.has(cam.panel))),
         laserOn: this.data.lasers.map((l) => !(l.panel && hacked.has(l.panel))),
+        cut,
         cache: new Uint8Array((this.layers + 2) * this.ncell),
       };
       this.ctxs.set(key, ctx);
@@ -242,7 +244,7 @@ class Planner {
     for (let i = 0; ok && i < this.G.length; i++) if (ctx.alive[i] && this.expo(this.G[i], c, k)) ok = false;
     for (let i = 0; ok && i < this.C.length; i++) if (ctx.camOn[i] && this.expo(this.C[i], c, k)) ok = false;
     for (let i = 0; ok && i < this.data.lasers.length; i++) if (ctx.laserOn[i] && this.laserBlocked(i, c, k)) ok = false;
-    if (ok && this.snow[c]) for (let i = 0; ok && i < this.G.length; i++) if (ctx.alive[i] && this.snowBlocked(this.G[i], c, k)) ok = false;
+    if (ok && this.snow[c]) for (let i = 0; ok && i < this.G.length; i++) if (ctx.alive[i] && this.snowBlocked(this.G[i], c, k, ctx.cut && ctx.cut.gi === i ? ctx.cut.tk : Infinity)) ok = false;
     ctx.cache[idx] = ok ? 1 : 2;
     return ok;
   }
@@ -272,8 +274,9 @@ class Planner {
    * Layered flood fill from (state.k, state.c) until `goal` can be achieved. Returns candidate events
    * { k, c, path, hold } where path[i] is the cell at layer state.k + i (including the hold).
    */
-  bfs(state, goal, limitFrame, maxEvents) {
-    const ctx = this.ctx(state.alive, state.hacked);
+  bfs(state, goal, limitFrame, maxEvents, tk = null) {
+    // With a kill deadline `tk`, prints the target guard could only see after it is dead don't matter.
+    const ctx = this.ctx(state.alive, state.hacked, goal.type === 'stab' && tk !== null ? { gi: goal.gi, tk } : null);
     const childAlive = state.alive.slice();
     const childHacked = new Set(state.hacked);
     if (goal.type === 'stab') childAlive[goal.gi] = 0;
@@ -393,6 +396,8 @@ class Planner {
     const { objectives } = this.data;
     if (objectives.includes('eliminateAll')) this.G.forEach((_, gi) => goals.push({ type: 'stab', gi }));
     if (objectives.includes('eliminateTargets')) this.G.forEach((g, gi) => g.target && goals.push({ type: 'stab', gi }));
+    // Guards the objectives don't require can still be taken out silently if that is the only way through.
+    if (this.opts.killAll) this.G.forEach((_, gi) => !goals.some((g) => g.type === 'stab' && g.gi === gi) && goals.push({ type: 'stab', gi }));
     if (objectives.includes('collect')) this.data.intel.forEach((_, idx) => goals.push({ type: 'intel', idx }));
     if (this.opts.hacks) {
       const used = new Set([...this.data.cameras.map((c) => c.panel), ...this.data.lasers.map((l) => l.panel)].filter(Boolean));
@@ -424,6 +429,19 @@ class Planner {
     return h;
   }
 
+  /** Candidate events for a goal; in snow levels, the stab search is repeated with growing kill deadlines. */
+  eventsFor(state, goal, limit) {
+    const maxEvents = goal.type === 'stab' ? 4 : 1;
+    if (goal.type !== 'stab' || !this.hasSnow) return this.bfs(state, goal, limit, maxEvents);
+    const t0 = state.k * FPL;
+    for (const secs of [8, 16, 32, 64, 1e6]) {
+      const tk = Math.min(limit, t0 + secs * 60);
+      const events = this.bfs(state, goal, tk, maxEvents, tk);
+      if (events.length || tk >= limit) return events;
+    }
+    return [];
+  }
+
   dfs(state, goals) {
     if (this.nodes >= this.opts.budget || performance.now() - this.t0 > this.opts.timeMs) return;
     const remaining = goals.filter((g) => !state.done.some((d) => d.type === g.type && d.gi === g.gi && d.idx === g.idx && d.pi === g.pi));
@@ -440,7 +458,7 @@ class Planner {
     const cands = [];
     for (const goal of remaining) {
       this.nodes++;
-      for (const ev of this.bfs(state, goal, limit, goal.type === 'stab' ? 4 : 1)) cands.push({ goal, ev });
+      for (const ev of this.eventsFor(state, goal, limit)) cands.push({ goal, ev });
       if (this.nodes >= this.opts.budget) break;
     }
     // earliest event per goal first, then the rest by time
@@ -494,6 +512,8 @@ function replay(data, plan, { extraSeconds = 4 } = {}) {
   const path = plan.path;
   const lastFrame = (path.length - 1) * FPL + extraSeconds * 60;
   let maxDev = 0;
+  let maxMeter = 0;
+  let disturbed = 0;
   let u = 0;
   for (; u < lastFrame && !lvl.finished; u++) {
     const k = Math.floor(u / FPL);
@@ -512,9 +532,16 @@ function replay(data, plan, { extraSeconds = 4 } = {}) {
     const cur = path[Math.min(k, path.length - 1)];
     if (u % FPL === 0) maxDev = Math.max(maxDev, Math.hypot(p.x - (cur % nx) * LAT, p.y - Math.floor(cur / nx) * LAT));
     lvl.update(DT, input);
+    for (const g of lvl.guards) {
+      maxMeter = Math.max(maxMeter, g.meter);
+      if (g.state !== 'patrol') disturbed++;
+    }
+    for (const cam of lvl.cameras) maxMeter = Math.max(maxMeter, cam.meter);
   }
   const s = lvl.stats;
   return {
+    maxMeter: +maxMeter.toFixed(2),
+    disturbed,
     completed: lvl.completed,
     failed: lvl.failed,
     hp: lvl.player.hp,
@@ -549,7 +576,12 @@ export async function verify(id, opts = {}) {
   const tiers = opts.tier ? [opts.tier] : Object.keys(TIERS);
   const canHack = (data.cameras.length || data.lasers.length) && data.panels.length;
   const attempts = [];
-  for (const tier of tiers) for (const hacks of canHack ? (opts.hacks === undefined ? [false, true] : [opts.hacks]) : [false]) attempts.push({ tier, hacks });
+  const canKill = !data.objectives.includes('eliminateAll') && data.guards.length > 0 && !data.objectives.includes('defeatBoss');
+  for (const tier of tiers) {
+    for (const killAll of canKill ? [false, true] : [false]) {
+      for (const hacks of canHack ? (opts.hacks === undefined ? [false, true] : [opts.hacks]) : [false]) attempts.push({ tier, hacks, killAll });
+    }
+  }
   let row = { id, name: data.name, target: data.targetTime };
   let totalMs = 0;
   let totalNodes = 0;
@@ -564,13 +596,14 @@ export async function verify(id, opts = {}) {
       continue;
     }
     const real = replay(await getData(id, opts), result);
-    const ok = real.completed && real.detections === 0 && real.bodiesDiscovered === 0 && real.hp === 3 && real.fullAlarms === 0;
+    const ok = real.completed && real.detections === 0 && real.bodiesDiscovered === 0 && real.hp === 3 && real.fullAlarms === 0 && real.maxMeter < 0.3;
     row = {
       ...row,
       ok,
       error: undefined,
       tier: a.tier,
       hacks: a.hacks,
+      killAll: a.killAll,
       planned: +result.seconds.toFixed(1),
       real,
       within: real.elapsed <= data.targetTime,
@@ -598,7 +631,7 @@ export async function verifyAll(ids, opts = {}) {
 export const summary = (r) =>
   !r.ok && (r.error || !r.real)
     ? `${r.id} FAIL ${r.error} (${r.nodes} nodes, ${r.ms}ms)`
-    : `${r.id} ${r.ok ? 'OK  ' : 'FAIL'} ${r.tier === 'safe' ? '' : r.tier.toUpperCase() + ' '}${r.real.elapsed}s/${r.target}s ${r.within ? '' : 'SLOW '}det=${r.real.detections} body=${r.real.bodiesDiscovered} hp=${r.real.hp} kills=${r.real.stealthKills}/${r.real.kills} dev=${r.real.maxDev} ${r.hacks ? 'hacks ' : ''}[${r.marks.join(' ')}] (${r.nodes} nodes, ${r.ms}ms)`;
+    : `${r.id} ${r.ok ? 'OK  ' : 'FAIL'} ${r.tier === 'safe' ? '' : r.tier.toUpperCase() + ' '}${r.real.elapsed}s/${r.target}s ${r.within ? '' : 'SLOW '}det=${r.real.detections} body=${r.real.bodiesDiscovered} hp=${r.real.hp} meter=${r.real.maxMeter} kills=${r.real.stealthKills}/${r.real.kills} dev=${r.real.maxDev} ${r.hacks ? 'hacks ' : ''}${r.killAll ? 'KILLS-EXTRA ' : ''}[${r.marks.join(' ')}] (${r.nodes} nodes, ${r.ms}ms)`;
 
 /**
  * Plays a route through the LIVE game with real keyboard events (8-direction movement, Space/E presses),
@@ -715,6 +748,21 @@ function* mutations(base, kinds) {
           }
         }
       }
+    }
+  }
+  if (kinds.includes('plow')) {
+    // Snow rows/columns turned into plain floor (a plowed lane leaves no prints).
+    for (let y = 1; y < rows.length - 1; y++) {
+      if (!rows[y].includes('*')) continue;
+      const j = structuredClone(base);
+      j.tiles[y] = rows[y].replaceAll('*', '.');
+      yield { label: `plow row ${y}`, json: j };
+    }
+    for (let x = 1; x < rows[0].length - 1; x++) {
+      if (!rows.some((r) => r[x] === '*')) continue;
+      const j = structuredClone(base);
+      j.tiles = rows.map((r) => (r[x] === '*' ? r.slice(0, x) + '.' + r.slice(x + 1) : r));
+      yield { label: `plow column ${x}`, json: j };
     }
   }
   if (kinds.includes('wall')) {

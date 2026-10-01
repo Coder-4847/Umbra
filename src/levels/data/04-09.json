@@ -1,7 +1,7 @@
 {
   "version": 1,
   "id": "04-09",
-  "name": "Last Watch",
+  "name": "Frostline",
   "chapter": 4,
   "targetTime": 145,
   "objectives": ["eliminateAll", "exit"],

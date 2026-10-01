@@ -79,6 +79,9 @@ function readBody(req) {
   });
 }
 
-export default defineConfig({
+// The build uses relative URLs, so the same `dist/` works on GitHub Pages (served from /Umbra/),
+// on a custom domain or from any other folder. The dev server stays at `/`.
+export default defineConfig(({ command }) => ({
+  base: command === 'build' ? './' : '/',
   plugins: [levelFilesPlugin()],
-});
+}));

@@ -2,7 +2,10 @@ import './style.css';
 import { Game } from './core/Game.js';
 import { Camera } from './core/Camera.js';
 import { Level } from './game/Level.js';
-import { campaignIds, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
+import { SaveData } from './core/SaveData.js';
+import { MAX_STARS, missedReasons, rateLevel } from './game/rating.js';
+import { campaignIds, chapters, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
+import { LevelSelect } from './ui/LevelSelect.js';
 import { parseLevel } from './levels/schema.js';
 import { PLAYTEST_STORAGE_KEY } from './levels/playtest.js';
 
@@ -16,17 +19,55 @@ const overlay = document.createElement('div');
 overlay.className = 'overlay';
 document.body.append(hud, overlay);
 
+const save = new SaveData();
+const levelSelect = new LevelSelect({
+  chapters,
+  campaignIds,
+  save,
+  onPick: (id) => {
+    levelSelect.close();
+    goToLevel(id);
+  },
+});
+
 let levelData = null;
 let level = null;
 let camera = null;
 let hudText = '';
+let loading = false;
+// Editor playtests and non-campaign levels (sandboxes) never touch the save.
+let recordsProgress = false;
 
-function showOverlay(tone, title, hint) {
+const div = (className, textContent) => Object.assign(document.createElement('div'), { className, textContent });
+
+function showOverlay(tone, title, hint, ...middle) {
   overlay.className = `overlay visible ${tone}`;
-  overlay.replaceChildren(
-    Object.assign(document.createElement('div'), { className: 'overlay-title', textContent: title }),
-    Object.assign(document.createElement('div'), { className: 'overlay-hint', textContent: hint }),
-  );
+  overlay.replaceChildren(div('overlay-title', title), ...middle, div('overlay-hint', hint));
+}
+
+/** CLEAR screen: stars for this run, what cost a star, and what it added to the save. */
+function showResults(stats) {
+  const { stars } = rateLevel(stats, levelData.targetTime);
+  const result = recordsProgress ? save.recordResult(levelData.id, stats, levelData.targetTime) : null;
+
+  const starRow = div('overlay-stars');
+  for (let i = 0; i < MAX_STARS; i++) {
+    starRow.append(Object.assign(document.createElement('span'), { className: i < stars ? 'on' : 'off', textContent: '★' }));
+  }
+
+  const lines = div('overlay-lines');
+  const addLine = (text, className = '') => lines.append(div(className, text));
+  addLine(`${formatTime(stats.elapsed)} / target ${formatTime(levelData.targetTime)}  ·  ${stats.kills} takedowns (${stats.stealthKills} silent)`);
+  const missed = missedReasons(stats, levelData.targetTime);
+  addLine(missed.length ? `Missed: ${missed.join(', ')}` : 'Perfect: unseen, no body found, in time');
+  if (result) {
+    if (result.starsGained > 0) addLine(`+${result.starsGained} ★  ·  ${save.currency()} to spend`, 'gain');
+    else if (result.bestStars > stars) addLine(`Best: ${'★'.repeat(result.bestStars)}`);
+    if (result.newBestTime) addLine(`New best time (${formatTime(result.bestTime)})`, 'gain');
+  }
+
+  const next = nextLevelId(levelData.id);
+  showOverlay('clear', 'CLEAR', `${next ? 'Enter: next level · ' : ''}R: replay · Esc: levels`, starRow, lines);
 }
 
 function hideOverlay() {
@@ -48,12 +89,8 @@ function startLevel() {
   hideOverlay();
   hudText = '';
 
-  level.on('failed', () => showOverlay('fail', 'CAUGHT', 'Press R to retry'));
-  level.on('completed', (stats) => {
-    const next = nextLevelId(levelData.id);
-    const summary = `${formatTime(stats.elapsed)} · ${stats.kills} kills (${stats.stealthKills} silent) · spotted ${stats.detections}×`;
-    showOverlay('clear', 'CLEAR', `${summary}  —  ${next ? 'Enter: next level · ' : ''}R: replay`);
-  });
+  level.on('failed', () => showOverlay('fail', 'CAUGHT', 'R: retry · Esc: levels'));
+  level.on('completed', showResults);
 
   camera = new Camera(level.player, { lerpSpeed: 6 });
   // A floor change is a cut, not a pan across the building.
@@ -61,13 +98,19 @@ function startLevel() {
     camera.x = level.player.x;
     camera.y = level.player.y;
   });
-  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData };
+  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect };
 }
 
 async function goToLevel(id) {
-  levelData = await loadLevel(id);
-  history.replaceState(null, '', `?level=${encodeURIComponent(id)}`);
-  startLevel();
+  loading = true;
+  try {
+    levelData = await loadLevel(id);
+    recordsProgress = campaignIds.includes(id);
+    history.replaceState(null, '', `?level=${encodeURIComponent(id)}`);
+    startLevel();
+  } finally {
+    loading = false;
+  }
 }
 
 function updateHud() {
@@ -98,9 +141,16 @@ async function boot() {
       levelData = parseLevel(JSON.parse(localStorage.getItem(PLAYTEST_STORAGE_KEY)));
       startLevel();
     } else {
+      // No level asked for: carry on where the save left off. `?level=` loads any
+      // level in dev (tests, editor, verification scripts); a shipped build won't
+      // open a campaign level the player hasn't unlocked.
       const requested = params.get('level');
-      const id = requested && hasLevel(requested) ? requested : (campaignIds[0] ?? 'sandbox');
-      await goToLevel(id);
+      const fallback = save.continueId(campaignIds) ?? 'sandbox';
+      const allowed =
+        requested &&
+        hasLevel(requested) &&
+        (import.meta.env.DEV || !campaignIds.includes(requested) || save.isUnlocked(requested, campaignIds));
+      await goToLevel(allowed ? requested : fallback);
     }
   } catch (err) {
     console.error(err);
@@ -111,7 +161,18 @@ async function boot() {
 await boot();
 
 game.onUpdate((delta) => {
-  if (!level) return;
+  if (!level || loading) return;
+
+  // The level select pauses the game underneath it.
+  if (game.input.wasActionPressed('menu')) {
+    if (levelSelect.isOpen) levelSelect.close();
+    else levelSelect.open(levelData.id);
+    return;
+  }
+  if (levelSelect.isOpen) {
+    levelSelect.handleInput(game.input);
+    return;
+  }
 
   if (game.input.wasActionPressed('restart')) startLevel();
   if (level.completed && game.input.wasActionPressed('confirm')) {

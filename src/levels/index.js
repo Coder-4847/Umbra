@@ -13,6 +13,31 @@ export const campaignIds = Object.keys(loaders)
   .filter((id) => /^\d{2}-\d{2}$/.test(id))
   .sort();
 
+export const CHAPTER_NAMES = [
+  'Urban Rooftops',
+  'Warehouse District',
+  'Research Facility',
+  'Snowbound Base',
+  'Jungle Outpost',
+  'Underground Bunker',
+  'Skyscraper Heist',
+  'Private Estate',
+  'Night Harbor',
+  'Black Site',
+];
+
+/** Campaign ids grouped by chapter, in play order: [{ number, name, ids }]. */
+export const chapters = [];
+for (const id of campaignIds) {
+  const number = Number(id.slice(0, 2));
+  let chapter = chapters.at(-1);
+  if (!chapter || chapter.number !== number) {
+    chapter = { number, name: CHAPTER_NAMES[number - 1] ?? `Chapter ${number}`, ids: [] };
+    chapters.push(chapter);
+  }
+  chapter.ids.push(id);
+}
+
 export function hasLevel(id) {
   return id in loaders;
 }

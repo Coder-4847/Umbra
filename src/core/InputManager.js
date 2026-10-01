@@ -8,6 +8,7 @@ const DEFAULT_BINDINGS = {
   interact: ['KeyE'],
   restart: ['KeyR'],
   confirm: ['Enter', 'NumpadEnter'],
+  menu: ['Escape'],
 };
 
 /**

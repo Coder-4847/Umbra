@@ -28,6 +28,7 @@ const levelSelect = new LevelSelect({
     levelSelect.close();
     goToLevel(id);
   },
+  onSkinChange: (id) => level?.player.setSkin(id),
 });
 
 let levelData = null;
@@ -84,7 +85,7 @@ function startLevel() {
     game.world.removeChild(level.root);
     level.destroy();
   }
-  level = new Level(levelData);
+  level = new Level(levelData, { skin: save.selectedSkin() });
   game.world.addChild(level.root);
   hideOverlay();
   hudText = '';

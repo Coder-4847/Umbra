@@ -1,3 +1,4 @@
+import { SKINS, skinSvg } from '../entities/skins.js';
 import { MAX_STARS } from '../game/rating.js';
 
 const el = (tag, className, text) => {
@@ -11,36 +12,62 @@ export function starString(stars) {
   return '★'.repeat(stars) + '☆'.repeat(MAX_STARS - stars);
 }
 
+const TABS = [
+  { id: 'levels', label: 'Levels' },
+  { id: 'skins', label: 'Skins' },
+];
+const SKIN_COLUMNS = 4;
+
 /**
- * Chapter/level grid: one row per chapter, stars under each level, locked
- * levels greyed out. Minimal on purpose; Phase 12 restyles it.
- * Driven from the game loop (`handleInput`) so it shares the InputManager's
- * per-frame presses with the rest of the game; cells are clickable too.
+ * The Esc menu, two tabs:
+ *   Levels  one row per chapter, stars under each level, locked levels greyed
+ *   Skins   cosmetic skins bought with stars
+ * Minimal on purpose; Phase 12 restyles it. Driven from the game loop
+ * (`handleInput`) so it shares the InputManager's per-frame presses with the
+ * rest of the game; everything is clickable too.
  */
 export class LevelSelect {
-  constructor({ chapters, campaignIds, save, onPick }) {
+  constructor({ chapters, campaignIds, save, onPick, onSkinChange }) {
     this.chapters = chapters;
     this.campaignIds = campaignIds;
     this.save = save;
     this.onPick = onPick;
+    this.onSkinChange = onSkinChange;
     this.isOpen = false;
+    this.tab = 'levels';
     this.row = 0;
     this.col = 0;
+    this.skinIndex = 0;
+    this.message = '';
 
     this.root = el('div', 'level-select');
     this.root.addEventListener('click', (e) => {
+      if (!this.isOpen) return;
+      const tab = e.target.closest('.ls-tab');
       const cell = e.target.closest('.ls-cell');
-      if (cell && this.isOpen) this._pick(cell.dataset.id);
+      const card = e.target.closest('.skin-card');
+      if (tab) this._setTab(tab.dataset.tab);
+      else if (cell) this._pick(cell.dataset.id);
+      else if (card) {
+        this.skinIndex = SKINS.findIndex((skin) => skin.id === card.dataset.id);
+        this._useSkin();
+      }
+    });
+    // Tab switches tabs here instead of moving browser focus.
+    window.addEventListener('keydown', (e) => {
+      if (this.isOpen && e.code === 'Tab') e.preventDefault();
     });
     document.body.append(this.root);
   }
 
   open(currentId) {
     this.isOpen = true;
+    this.message = '';
     const focus = this.campaignIds.includes(currentId) ? currentId : this.save.continueId(this.campaignIds);
     const row = this.chapters.findIndex((chapter) => chapter.ids.includes(focus));
     this.row = Math.max(0, row);
     this.col = Math.max(0, this.chapters[this.row]?.ids.indexOf(focus) ?? 0);
+    this.skinIndex = Math.max(0, SKINS.findIndex((skin) => skin.id === this.save.selectedSkin()));
     this._render();
     this.root.classList.add('visible');
   }
@@ -51,17 +78,38 @@ export class LevelSelect {
   }
 
   handleInput(input) {
-    const move = (dRow, dCol) => {
-      this.row = (this.row + dRow + this.chapters.length) % this.chapters.length;
-      const count = this.chapters[this.row].ids.length;
-      this.col = Math.min((this.col + dCol + count) % count, count - 1);
-      this._highlight();
-    };
-    if (input.wasActionPressed('up')) move(-1, 0);
-    if (input.wasActionPressed('down')) move(1, 0);
-    if (input.wasActionPressed('left')) move(0, -1);
-    if (input.wasActionPressed('right')) move(0, 1);
-    if (input.wasActionPressed('confirm')) this._pick(this.chapters[this.row].ids[this.col]);
+    if (input.wasActionPressed('tabNext') || input.wasActionPressed('tabPrev')) {
+      const step = input.wasActionPressed('tabNext') ? 1 : -1;
+      const index = TABS.findIndex((tab) => tab.id === this.tab);
+      this._setTab(TABS[(index + step + TABS.length) % TABS.length].id);
+      return;
+    }
+    const dRow = (input.wasActionPressed('down') ? 1 : 0) - (input.wasActionPressed('up') ? 1 : 0);
+    const dCol = (input.wasActionPressed('right') ? 1 : 0) - (input.wasActionPressed('left') ? 1 : 0);
+
+    if (this.tab === 'levels') {
+      if (dRow || dCol) {
+        this.row = (this.row + dRow + this.chapters.length) % this.chapters.length;
+        const count = this.chapters[this.row].ids.length;
+        this.col = Math.min((this.col + dCol + count) % count, count - 1);
+        this._highlight();
+      }
+      if (input.wasActionPressed('confirm')) this._pick(this.chapters[this.row].ids[this.col]);
+    } else {
+      if (dRow || dCol) {
+        const next = this.skinIndex + dCol + dRow * SKIN_COLUMNS;
+        if (next >= 0 && next < SKINS.length) this.skinIndex = next;
+        this.message = '';
+        this._render();
+      }
+      if (input.wasActionPressed('confirm')) this._useSkin();
+    }
+  }
+
+  _setTab(tab) {
+    this.tab = tab;
+    this.message = '';
+    this._render();
   }
 
   _pick(id) {
@@ -69,14 +117,52 @@ export class LevelSelect {
     this.onPick(id);
   }
 
+  /** Enter/click on a skin: equip it if owned, otherwise buy it (and equip it) if the stars are there. */
+  _useSkin() {
+    const { save } = this;
+    const skin = SKINS[this.skinIndex];
+    if (!skin) return;
+    if (!save.ownsSkin(skin.id)) {
+      if (!save.buySkin(skin.id)) {
+        this.message = `Not enough stars: ${skin.name} costs ${skin.price}, you have ${save.currency()}`;
+        this._render();
+        return;
+      }
+      this.message = `Bought ${skin.name} for ${skin.price} ★`;
+    } else {
+      this.message = '';
+    }
+    save.selectSkin(skin.id);
+    this.onSkinChange?.(skin.id);
+    this._render();
+  }
+
   _render() {
     const { save, campaignIds } = this;
     const header = el('div', 'ls-header');
+    const tabs = el('div', 'ls-tabs');
+    for (const tab of TABS) {
+      const button = el('button', `ls-tab${tab.id === this.tab ? ' active' : ''}`, tab.label);
+      button.type = 'button';
+      button.tabIndex = -1;
+      button.dataset.tab = tab.id;
+      tabs.append(button);
+    }
     header.append(
-      el('div', 'ls-title', 'SELECT LEVEL'),
+      tabs,
       el('div', 'ls-total', `★ ${save.totalStars()} / ${campaignIds.length * MAX_STARS}   ·   ${save.currency()} to spend`),
     );
 
+    const levels = this.tab === 'levels';
+    const hint = levels
+      ? 'Arrows / WASD: move  ·  Enter: play  ·  Q / E: skins  ·  Esc: back'
+      : 'Arrows / WASD: move  ·  Enter: buy / equip  ·  Q / E: levels  ·  Esc: back';
+    this.root.replaceChildren(header, levels ? this._levelGrid() : this._skinGrid(), el('div', 'ls-hint', hint));
+    if (levels) this._highlight();
+  }
+
+  _levelGrid() {
+    const { save, campaignIds } = this;
     const grid = el('div', 'ls-grid');
     for (const chapter of this.chapters) {
       const earned = chapter.ids.reduce((sum, id) => sum + save.stars(id), 0);
@@ -106,9 +192,32 @@ export class LevelSelect {
       row.append(label, cells);
       grid.append(row);
     }
+    return grid;
+  }
 
-    this.root.replaceChildren(header, grid, el('div', 'ls-hint', 'Arrows / WASD: move  ·  Enter: play  ·  Esc: back'));
-    this._highlight();
+  _skinGrid() {
+    const { save } = this;
+    const equipped = save.selectedSkin();
+    const wrap = el('div', 'skin-pane');
+    const grid = el('div', 'skin-grid');
+    SKINS.forEach((skin, index) => {
+      const owned = save.ownsSkin(skin.id);
+      const card = el('button', 'skin-card');
+      card.type = 'button';
+      card.tabIndex = -1;
+      card.dataset.id = skin.id;
+      if (index === this.skinIndex) card.classList.add('selected');
+      if (skin.id === equipped) card.classList.add('equipped');
+      if (!owned) card.classList.add(skin.price <= save.currency() ? 'affordable' : 'locked');
+      const preview = el('div', 'skin-preview');
+      preview.innerHTML = skinSvg(skin);
+      const status = skin.id === equipped ? 'Equipped' : owned ? 'Owned' : `★ ${skin.price}`;
+      card.append(preview, el('div', 'skin-name', skin.name), el('div', 'skin-status', status));
+      grid.append(card);
+    });
+    const current = SKINS[this.skinIndex];
+    wrap.append(grid, el('div', 'skin-blurb', this.message || current?.blurb || ''), el('div', 'skin-note', 'Skins are cosmetic only.'));
+    return wrap;
   }
 
   _highlight() {

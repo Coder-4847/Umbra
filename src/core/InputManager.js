@@ -9,6 +9,8 @@ const DEFAULT_BINDINGS = {
   restart: ['KeyR'],
   confirm: ['Enter', 'NumpadEnter'],
   menu: ['Escape'],
+  tabPrev: ['KeyQ'],
+  tabNext: ['KeyE', 'Tab'],
 };
 
 /**

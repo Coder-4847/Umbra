@@ -105,7 +105,7 @@ const OBJECTIVE_LABELS = {
  * 'transit' when the player arrives by stairs or elevator.
  */
 export class Level extends EventEmitter {
-  constructor(data) {
+  constructor(data, { skin } = {}) {
     super();
     this.data = data;
     this.tilemap = new Tilemap(data.cols, data.rows, data.grid);
@@ -144,7 +144,7 @@ export class Level extends EventEmitter {
       this.effects.view,
     );
 
-    this.player = new Player(data.spawn.x, data.spawn.y);
+    this.player = new Player(data.spawn.x, data.spawn.y, skin);
     this.panels = data.panels.map((config) => new AlarmPanel(config));
     const panelsById = new Map(this.panels.filter((p) => p.id).map((p) => [p.id, p]));
     this.lasers = data.lasers.map((config) => {

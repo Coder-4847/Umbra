@@ -1,3 +1,4 @@
+import { DEFAULT_SKIN, getSkin } from '../entities/skins.js';
 import { rateLevel } from '../game/rating.js';
 
 export const SAVE_KEY = 'umbra.save.v1';
@@ -7,8 +8,9 @@ function emptySave() {
   return {
     version: SAVE_VERSION,
     levels: {}, // id -> { stars, bestTime, completions }
-    starsSpent: 0, // Phase 10 spends stars on skins
-    selectedSkin: null,
+    starsSpent: 0, // stars paid for skins
+    ownedSkins: [], // bought skin ids; free skins are always owned
+    selectedSkin: DEFAULT_SKIN,
     settings: {},
   };
 }
@@ -17,7 +19,9 @@ function emptySave() {
 function migrate(raw) {
   if (!raw || typeof raw !== 'object' || typeof raw.levels !== 'object' || raw.levels === null) return emptySave();
   // Future versions convert older blobs here before the merge below.
-  return { ...emptySave(), ...raw, version: SAVE_VERSION };
+  const data = { ...emptySave(), ...raw, version: SAVE_VERSION };
+  if (!Array.isArray(data.ownedSkins)) data.ownedSkins = [];
+  return data;
 }
 
 /**
@@ -99,6 +103,34 @@ export class SaveData {
   /** Spendable stars: everything earned minus what skins have cost. */
   currency() {
     return this.totalStars() - this.data.starsSpent;
+  }
+
+  ownsSkin(id) {
+    const skin = getSkin(id);
+    return skin.id === id && (skin.price === 0 || this.data.ownedSkins.includes(id));
+  }
+
+  /** The equipped skin; falls back to the default if the save names one that isn't owned. */
+  selectedSkin() {
+    const id = this.data.selectedSkin;
+    return this.ownsSkin(id) ? id : DEFAULT_SKIN;
+  }
+
+  /** Pays the skin's price in stars. False if it's unknown, already owned or too expensive. */
+  buySkin(id) {
+    const skin = getSkin(id);
+    if (skin.id !== id || this.ownsSkin(id) || skin.price > this.currency()) return false;
+    this.data.ownedSkins.push(id);
+    this.data.starsSpent += skin.price;
+    this.save();
+    return true;
+  }
+
+  selectSkin(id) {
+    if (!this.ownsSkin(id)) return false;
+    this.data.selectedSkin = id;
+    this.save();
+    return true;
   }
 
   /**

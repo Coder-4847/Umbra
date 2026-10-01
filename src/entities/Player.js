@@ -1,5 +1,6 @@
 import { Container, Graphics } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
+import { getSkin } from './skins.js';
 
 const HALF_SIZE = 10;
 const MAX_HP = 3;
@@ -10,7 +11,8 @@ export const PLAYER_SPEED = Object.freeze({ walk: 180, sprint: 250, drag: 100 })
 
 /** 8-directional player entity with sliding tile collision, health, and body carrying. */
 export class Player {
-  constructor(x, y) {
+  constructor(x, y, skinId) {
+    this.skinId = getSkin(skinId).id;
     this.x = x;
     this.y = y;
     this.halfSize = HALF_SIZE;
@@ -61,17 +63,35 @@ export class Player {
   _buildView() {
     const view = new Container();
     this.body = new Graphics();
-    this.body.circle(0, 0, HALF_SIZE).fill(0xffffff);
-    this.body.poly([HALF_SIZE + 6, 0, HALF_SIZE - 4, -5, HALF_SIZE - 4, 5]).fill(0xffffff);
+    this._drawSkin();
     this.pips = new Graphics();
     view.addChild(this.body, this.pips);
     return view;
   }
 
+  /** Cosmetic only: swaps the drawing, nothing else. */
+  setSkin(skinId) {
+    this.skinId = getSkin(skinId).id;
+    this._drawSkin();
+  }
+
+  _drawSkin() {
+    const g = this.body;
+    g.clear();
+    for (const s of getSkin(this.skinId).shapes) {
+      if (s.type === 'circle') g.circle(s.x, s.y, s.r);
+      else if (s.type === 'ellipse') g.ellipse(s.x, s.y, s.rx, s.ry);
+      else if (s.type === 'rect') g.rect(s.x, s.y, s.w, s.h);
+      else g.poly(s.points);
+      g.fill({ color: s.fill, alpha: s.alpha ?? 1 });
+      if (s.stroke !== undefined) g.stroke({ color: s.stroke, width: s.width ?? 1 });
+    }
+  }
+
   _syncView() {
     this.view.position.set(this.x, this.y);
     this.body.rotation = this.facing;
-    this.body.tint = this.hitFlash > 0 ? 0xff6b6b : 0x4ade80;
+    this.body.tint = this.hitFlash > 0 ? 0xff6b6b : 0xffffff;
 
     if (this.inTransit) this.view.alpha = 0;
     else if (this.dead) this.view.alpha = 0.35;

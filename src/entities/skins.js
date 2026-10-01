@@ -11,16 +11,30 @@
  */
 export const DEFAULT_SKIN = 'ninja';
 
-const nose = (fill) => ({ type: 'poly', points: [16, 0, 9, -4, 9, 4], fill });
-const shoulders = (fill, stroke) => ({ type: 'ellipse', x: -1, y: 0, rx: 7, ry: 10.5, fill, stroke, width: 1.5 });
-const head = (fill, stroke) => ({ type: 'circle', x: 1, y: 0, r: 6, fill, stroke, width: 1 });
+const shadeOf = (color, f) =>
+  (Math.min(255, ((color >> 16) & 255) * f) << 16) | (Math.min(255, ((color >> 8) & 255) * f) << 8) | Math.min(255, (color & 255) * f);
+// A small marker ahead of the agent: which way they are heading.
+const nose = (fill) => ({ type: 'poly', points: [15, 0, 10.5, -2.6, 10.5, 2.6], fill });
+// Torso with both arms reaching slightly forward.
+const shoulders = (fill, stroke) => [
+  { type: 'ellipse', x: 4.6, y: -7.4, rx: 4.4, ry: 2.4, fill, stroke, width: 1 },
+  { type: 'ellipse', x: 4.6, y: 7.4, rx: 4.4, ry: 2.4, fill, stroke, width: 1 },
+  { type: 'circle', x: 8.4, y: -7.2, r: 1.7, fill: shadeOf(fill, 0.55) },
+  { type: 'circle', x: 8.4, y: 7.2, r: 1.7, fill: shadeOf(fill, 0.55) },
+  { type: 'ellipse', x: -1, y: 0, rx: 6.6, ry: 10.5, fill, stroke, width: 1.5 },
+  { type: 'ellipse', x: -3.4, y: 0, rx: 2.6, ry: 6.5, fill: shadeOf(fill, 0.72) },
+];
+const head = (fill, stroke) => [
+  { type: 'circle', x: 1, y: 0, r: 6, fill, stroke, width: 1 },
+  { type: 'ellipse', x: -1, y: -2, rx: 2.4, ry: 1.5, fill: 0xffffff, alpha: 0.16 },
+];
 
 const ninjaShapes = (body, trim, hood, band, tip) => [
   { type: 'poly', points: [-4, -1, -12, -6, -10, -1], fill: band },
   { type: 'poly', points: [-4, 1, -13, 3, -10, 6], fill: band },
   nose(tip),
-  shoulders(body, trim),
-  head(hood),
+  ...shoulders(body, trim),
+  ...head(hood),
   { type: 'rect', x: 1.5, y: -6, w: 2.5, h: 12, fill: band },
 ];
 
@@ -40,8 +54,8 @@ export const SKINS = [
     shapes: [
       { type: 'rect', x: -11, y: -5, w: 5, h: 10, fill: 0x3f4a1c },
       nose(0xa3e635),
-      shoulders(0x5b7f1e, 0x2a3a0c),
-      head(0x3d5a14, 0x84cc16),
+      ...shoulders(0x5b7f1e, 0x2a3a0c),
+      ...head(0x3d5a14, 0x84cc16),
       { type: 'rect', x: 5, y: 5.5, w: 10, h: 2.2, fill: 0x1f2937 },
     ],
   },
@@ -52,7 +66,7 @@ export const SKINS = [
     blurb: 'Sharp suit, sharper hat.',
     shapes: [
       nose(0xe2e8f0),
-      shoulders(0x273449, 0x94a3b8),
+      ...shoulders(0x273449, 0x94a3b8),
       { type: 'poly', points: [5, 0, 8, -1.6, 11, 0, 8, 1.6], fill: 0xdc2626 },
       { type: 'circle', x: 0, y: 0, r: 8.5, fill: 0x4b5563 },
       { type: 'circle', x: 0, y: 0, r: 5, fill: 0x1f2937, stroke: 0xdc2626, width: 1.2 },
@@ -65,7 +79,7 @@ export const SKINS = [
     blurb: 'Somebody has to work the night shift.',
     shapes: [
       nose(0xf59e0b),
-      shoulders(0xf1f5f9, 0x94a3b8),
+      ...shoulders(0xf1f5f9, 0x94a3b8),
       { type: 'circle', x: 5, y: -3, r: 0.9, fill: 0x475569 },
       { type: 'circle', x: 5, y: 3, r: 0.9, fill: 0x475569 },
       { type: 'circle', x: -1, y: -3.5, r: 4, fill: 0xffffff, stroke: 0xcbd5e1, width: 0.8 },
@@ -106,7 +120,7 @@ export const SKINS = [
     shapes: [
       { type: 'rect', x: -12, y: -6, w: 5, h: 12, fill: 0x9ca3af, stroke: 0x6b7280, width: 1 },
       nose(0xf97316),
-      shoulders(0xe5e7eb, 0xf97316),
+      ...shoulders(0xe5e7eb, 0xf97316),
       { type: 'circle', x: 1, y: 0, r: 7, fill: 0xf8fafc, stroke: 0x9ca3af, width: 1 },
       { type: 'ellipse', x: 4, y: 0, rx: 3.2, ry: 5, fill: 0x1d4ed8, stroke: 0xfbbf24, width: 1 },
     ],

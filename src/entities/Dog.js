@@ -186,6 +186,8 @@ export class Dog extends Guard {
 
   _buildView() {
     const view = super._buildView();
+    this.figure.setFeetVisible(false);
+    this.figure.shadow.clear().ellipse(1, 3, 13, 8).fill({ color: 0x000000, alpha: 0.3 });
     const g = this.body.clear();
     g.moveTo(-10, 0).lineTo(-15, -2).lineTo(-18, -6).stroke({ width: 3, color: FUR_DARK });
     g.ellipse(-2, 0, 11, 6.5).fill(FUR);

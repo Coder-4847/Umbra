@@ -1,5 +1,6 @@
 import { coneColors } from '../core/visual.js';
-import { GUARD_SHAPES, TARGET_SHAPES, drawShapes } from './shapes.js';
+import { GUARD_SHAPES, TARGET_SHAPES } from './shapes.js';
+import { Figure } from './Figure.js';
 import { Container, EventEmitter, Graphics, Text } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
@@ -565,9 +566,10 @@ export class Guard extends EventEmitter {
   _buildView() {
     const view = new Container();
 
-    this.body = new Graphics();
-    drawShapes(this.body, this.target ? TARGET_SHAPES : GUARD_SHAPES);
-    if (this.target) this.body.circle(0, 0, HALF_SIZE + 4).stroke({ width: 2, color: 0xff8a80, alpha: 0.9 });
+    this.figure = new Figure(this.target ? TARGET_SHAPES : GUARD_SHAPES);
+    this.body = this.figure.body;
+    // Marked targets carry a ring on the ground so they read at a glance.
+    if (this.target) this.figure.shadow.circle(0, 0, HALF_SIZE + 5).stroke({ width: 2, color: 0xff8a80, alpha: 0.9 });
 
     this.meterBar = new Graphics();
 
@@ -585,7 +587,7 @@ export class Guard extends EventEmitter {
     this.indicator.position.set(0, -HALF_SIZE - 8);
     this._indicatorState = null;
 
-    view.addChild(this.body, this.meterBar, this.indicator);
+    view.addChild(this.figure, this.meterBar, this.indicator);
     return view;
   }
 
@@ -606,7 +608,7 @@ export class Guard extends EventEmitter {
 
   _syncView() {
     this.view.position.set(this.x, this.y);
-    this.body.rotation = this.facing;
+    this.figure.pose(this.x, this.y, this.facing);
 
     const indicatorState = this.alarmRun ? 'alarmRun' : this.state;
     if (this._indicatorState !== indicatorState) {

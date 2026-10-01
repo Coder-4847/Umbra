@@ -1,6 +1,7 @@
 import { Container, Graphics } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
-import { drawShapes } from './shapes.js';
+import { turnToward } from '../core/math.js';
+import { Figure } from './Figure.js';
 import { getSkin } from './skins.js';
 
 const HALF_SIZE = 10;
@@ -9,8 +10,13 @@ const INVULN_TIME = 0.6;
 const HIT_FLASH_TIME = 0.15;
 
 export const PLAYER_SPEED = Object.freeze({ walk: 180, sprint: 250, drag: 100 });
+// Velocity eases toward what the stick or keys ask for (1/s), and the body turns to follow it (rad/s),
+// so eight keyboard directions blend into curves instead of snapping.
+const ACCELERATION = 16;
+const BRAKING = 22;
+const TURN_SPEED = 13;
 
-/** 8-directional player entity with sliding tile collision, health, and body carrying. */
+/** The player: eased movement with sliding tile collision, health, and body carrying. */
 export class Player {
   constructor(x, y, skinId) {
     this.skinId = getSkin(skinId).id;
@@ -18,6 +24,10 @@ export class Player {
     this.y = y;
     this.halfSize = HALF_SIZE;
     this.facing = 0;
+    this.vx = 0;
+    this.vy = 0;
+    // QA replays switch this off to place the player exactly (tools/qa/routes.js).
+    this.smooth = true;
 
     this.hp = MAX_HP;
     this.dead = false;
@@ -39,13 +49,24 @@ export class Player {
     this.invulnTimer = Math.max(0, this.invulnTimer - dt);
     this.hitFlash = Math.max(0, this.hitFlash - dt);
 
-    if (this.lockTimer > 0) {
-      this.lockTimer -= dt;
-    } else if (!this.dead) {
-      if (moveVector.x !== 0 || moveVector.y !== 0) {
-        this.facing = Math.atan2(moveVector.y, moveVector.x);
-      }
-      moveAndCollide(this, moveVector.x * speed * dt, moveVector.y * speed * dt, tilemap);
+    const free = this.lockTimer <= 0 && !this.dead;
+    if (this.lockTimer > 0) this.lockTimer -= dt;
+    const wantX = free ? moveVector.x * speed : 0;
+    const wantY = free ? moveVector.y * speed : 0;
+    if (this.smooth) {
+      const pushing = wantX !== 0 || wantY !== 0;
+      const k = 1 - Math.exp(-(pushing ? ACCELERATION : BRAKING) * dt);
+      this.vx += (wantX - this.vx) * k;
+      this.vy += (wantY - this.vy) * k;
+      if (!pushing && Math.hypot(this.vx, this.vy) < 4) this.vx = this.vy = 0;
+    } else {
+      this.vx = wantX;
+      this.vy = wantY;
+    }
+    if (free && (this.vx !== 0 || this.vy !== 0)) {
+      const heading = Math.atan2(this.vy, this.vx);
+      this.facing = this.smooth ? turnToward(this.facing, heading, TURN_SPEED * dt) : heading;
+      moveAndCollide(this, this.vx * dt, this.vy * dt, tilemap);
     }
 
     this._syncView();
@@ -63,10 +84,10 @@ export class Player {
 
   _buildView() {
     const view = new Container();
-    this.body = new Graphics();
-    this._drawSkin();
+    this.figure = new Figure(getSkin(this.skinId).shapes);
+    this.body = this.figure.body;
     this.pips = new Graphics();
-    view.addChild(this.body, this.pips);
+    view.addChild(this.figure, this.pips);
     return view;
   }
 
@@ -77,13 +98,12 @@ export class Player {
   }
 
   _drawSkin() {
-    this.body.clear();
-    drawShapes(this.body, getSkin(this.skinId).shapes);
+    this.figure.setShapes(getSkin(this.skinId).shapes);
   }
 
   _syncView() {
     this.view.position.set(this.x, this.y);
-    this.body.rotation = this.facing;
+    this.figure.pose(this.x, this.y, this.facing);
     this.body.tint = this.hitFlash > 0 ? 0xff6b6b : 0xffffff;
 
     if (this.inTransit) this.view.alpha = 0;

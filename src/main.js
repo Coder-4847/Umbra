@@ -42,7 +42,9 @@ const intro = div('intro');
 const overlay = div('overlay');
 // Fades the canvas out and back in around level changes.
 const veil = div('veil');
-document.body.append(hud, intro, overlay, veil);
+// Darkens the edges of the screen: night closes in around whatever the camera is on.
+const vignette = div('vignette');
+document.body.append(vignette, hud, intro, overlay, veil);
 
 const save = new SaveData();
 const { input } = game;

@@ -513,6 +513,7 @@ class Planner {
 /** Replays a route in a real Level with synthetic input; returns the outcome read from the level. */
 function replay(data, plan, { extraSeconds = 4 } = {}) {
   const lvl = new Level(data);
+  lvl.player.smooth = false; // the plan assumes exact, instant movement
   const input = inputStub();
   const nx = plan.nx;
   const actions = new Map();

@@ -1,0 +1,12 @@
+{
+  "_about": "Route verification log for Phase 14 (tools/qa/routes.js). seconds = elapsed of the replay in the real Level; tier = safety margin (safe > tight > exact); plan = events (stabN = silent takedown of guard N, intelN, hackN) with their time in seconds. A route counts only with completed, detections 0, bodiesDiscovered 0, hp 3, fullAlarms 0.",
+  "01-01": { "tier": "safe", "seconds": 4.67, "target": 45, "plan": "stab0@3.1" },
+  "01-02": { "tier": "safe", "seconds": 5.88, "target": 55, "plan": "stab0@5.1" },
+  "01-03": { "tier": "safe", "seconds": 12.0, "target": 60, "plan": "stab0@4.1 stab1@9.6" },
+  "01-04": { "tier": "safe", "seconds": 8.15, "target": 65, "plan": "stab0@2.3 stab1@4.7" },
+  "01-05": { "tier": "safe", "seconds": 14.28, "target": 75, "plan": "stab0@10.0" },
+  "01-06": { "tier": "safe", "seconds": 12.55, "target": 70, "plan": "intel0@3.2 intel1@10.7", "fix": "no route existed: the only gap out of the spawn room ran along the edge of the guard's cone. Guard 0's patrol moved from x=5 to x=4" },
+  "01-07": { "tier": "safe", "seconds": 13.22, "target": 80, "plan": "stab1@2.5 stab0@6.3 stab2@9.5" },
+  "01-08": { "tier": "safe", "seconds": 11.87, "target": 90, "plan": "stab0@0.7 stab1@4.7 stab3@8.4 stab2@9.7" },
+  "01-09": { "tier": "safe", "seconds": 76.4, "target": 115, "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab4@69.5 stab2@73.2", "fix": "the fastest route needs 76s (two guards only line up late): targetTime 100 -> 115. Also played with real keyboard events in the live game: completed, 5/5 silent, 0 detections" }
+}

@@ -3,7 +3,7 @@
   "id": "01-09",
   "name": "Last Rounds",
   "chapter": 1,
-  "targetTime": 100,
+  "targetTime": 115,
   "objectives": ["eliminateAll", "exit"],
   "tiles": [
     "##################################",

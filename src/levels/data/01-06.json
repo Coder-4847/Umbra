@@ -29,8 +29,8 @@
     {
       "route": "loop",
       "patrol": [
-        {"x": 5, "y": 3, "wait": 1.5, "look": "S"},
-        {"x": 5, "y": 14, "wait": 1.5, "look": "N"}
+        {"x": 4, "y": 3, "wait": 1.5, "look": "S"},
+        {"x": 4, "y": 14, "wait": 1.5, "look": "N"}
       ]
     },
     {

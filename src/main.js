@@ -3,23 +3,38 @@ import { Game } from './core/Game.js';
 import { Camera } from './core/Camera.js';
 import { Level } from './game/Level.js';
 import { SaveData } from './core/SaveData.js';
-import { applyVisualSettings } from './core/visual.js';
+import { applyVisualSettings, visual } from './core/visual.js';
+import { getSkin } from './entities/skins.js';
 import { MAX_STARS, missedReasons, rateLevel } from './game/rating.js';
-import { campaignIds, chapters, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
+import { CHAPTER_NAMES, campaignIds, chapters, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
 import { LevelSelect } from './ui/LevelSelect.js';
+import { TitleScreen } from './ui/TitleScreen.js';
 import { TouchControls } from './ui/TouchControls.js';
 import { parseLevel } from './levels/schema.js';
 import { PLAYTEST_STORAGE_KEY } from './levels/playtest.js';
 
+// Single-floor levels that look busy with nobody playing: they run behind the main menu.
+const DEMO_LEVELS = ['09-08', '03-06', '08-08', '06-04', '05-04', '10-08', '02-05'];
+const DEMO_TIME = 26;
+const FADE_MS = 220;
+
 const game = new Game();
 await game.init(document.querySelector('#app'));
 
-// Minimal HUD and overlays; Phase 12 replaces these with the polished UI.
-const hud = document.createElement('div');
-hud.className = 'hud';
-const overlay = document.createElement('div');
-overlay.className = 'overlay';
-document.body.append(hud, overlay);
+const el = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const div = (className, text) => el('div', className, text);
+
+const hud = div('hud');
+const intro = div('intro');
+const overlay = div('overlay');
+// Fades the canvas out and back in around level changes.
+const veil = div('veil');
+document.body.append(hud, intro, overlay, veil);
 
 const save = new SaveData();
 const { input } = game;
@@ -32,38 +47,81 @@ const levelSelect = new LevelSelect({
   save,
   input,
   onPick: (id) => {
-    levelSelect.close();
+    levelSelect.close({ silent: true });
     goToLevel(id);
   },
-  onSkinChange: (id) => level?.player.setSkin(id),
+  onSkinChange: (id) => {
+    if (scene === 'play') level?.player.setSkin(id);
+  },
+  onHome: () => {
+    levelSelect.close({ silent: true });
+    showTitle();
+  },
+  onClose: () => {
+    if (scene === 'title') title.show(titleInfo());
+  },
+});
+const title = new TitleScreen({
+  input,
+  onAction: (id) => {
+    if (id === 'play') goToLevel(save.continueId(campaignIds) ?? 'sandbox');
+    else {
+      title.hide();
+      levelSelect.open(null, { tab: id });
+    }
+  },
 });
 
+/** 'title' = main menu over a demo level, 'play' = a level the player controls. */
+let scene = 'play';
 let levelData = null;
 let level = null;
 let camera = null;
-let hudText = '';
+let hudHtml = '';
 let loading = false;
 // Editor playtests and non-campaign levels (sandboxes) never touch the save.
 let recordsProgress = false;
+let demoIndex = 0;
+let demoTimer = 0;
+let demoClock = 0;
+const demoTarget = { x: 0, y: 0 };
+let continueName = '';
 
-const div = (className, textContent) => Object.assign(document.createElement('div'), { className, textContent });
+const escapeHtml = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const chapterLabel = (data) => (data.chapter >= 1 && CHAPTER_NAMES[data.chapter - 1] ? `Chapter ${data.chapter} · ${CHAPTER_NAMES[data.chapter - 1]}` : 'Test level');
+
+function formatTime(seconds) {
+  const s = Math.floor(seconds);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// --- overlays (CAUGHT / CLEAR) -------------------------------------------------
 
 /** `actions`: [[action, text], ...] become buttons that also show the key/button for the active input mode. */
-function showOverlay(tone, title, actions, ...middle) {
+function showOverlay(tone, heading, actions, ...middle) {
   const buttons = div('overlay-actions');
-  for (const [action, text] of actions) {
-    const button = Object.assign(document.createElement('button'), { className: 'overlay-action', type: 'button', tabIndex: -1 });
-    button.textContent = input.activeMode === 'touch' ? text : `${input.label(action)} · ${text}`;
+  actions.forEach(([action, text], index) => {
+    const button = el('button', `overlay-action${index === 0 ? ' primary' : ''}`);
+    button.type = 'button';
+    button.tabIndex = -1;
+    if (input.activeMode !== 'touch') button.append(el('kbd', '', input.label(action)));
+    button.append(document.createTextNode(text));
     button.addEventListener('click', () => input.press(action));
     buttons.append(button);
-  }
+  });
+  const card = div('overlay-card');
+  card.append(div('overlay-title', heading), ...middle, buttons);
   overlay.className = `overlay visible ${tone}`;
-  overlay.replaceChildren(div('overlay-title', title), ...middle, buttons);
+  overlay.replaceChildren(card);
 }
 
 // The prompts name keys/buttons, so redraw them when the player switches device.
 let overlayRedraw = null;
-input.onModeChange(() => overlayRedraw?.());
+input.onModeChange(() => {
+  if (!overlayRedraw) return;
+  overlay.classList.add('instant'); // a redraw, not a new result: no entrance animation
+  overlayRedraw();
+});
 
 /** CLEAR screen: stars for this run, what cost a star, and what it added to the save. */
 function showResults(stats) {
@@ -71,14 +129,16 @@ function showResults(stats) {
   const result = recordsProgress ? save.recordResult(levelData.id, stats, levelData.targetTime) : null;
   const draw = () => drawResults(stats, stars, result);
   overlayRedraw = draw;
+  overlay.classList.remove('instant');
   draw();
 }
 
 function drawResults(stats, stars, result) {
-
   const starRow = div('overlay-stars');
   for (let i = 0; i < MAX_STARS; i++) {
-    starRow.append(Object.assign(document.createElement('span'), { className: i < stars ? 'on' : 'off', textContent: '★' }));
+    const star = el('span', i < stars ? 'on' : 'off', '★');
+    star.style.setProperty('--i', String(i));
+    starRow.append(star);
   }
 
   const lines = div('overlay-lines');
@@ -93,14 +153,16 @@ function drawResults(stats, stars, result) {
   }
 
   const next = nextLevelId(levelData.id);
-  const actions = [['restart', 'Replay'], ['menu', 'Levels']];
+  const campaignDone = recordsProgress && !next;
+  if (campaignDone) addLine(`Final mission cleared  ·  ★ ${save.totalStars()} / ${campaignIds.length * MAX_STARS}`, 'gain');
+  const actions = [['restart', 'Replay'], ['menu', 'Levels'], ['home', 'Main menu']];
   if (next) actions.unshift(['confirm', 'Next level']);
-  showOverlay('clear', 'CLEAR', actions, starRow, lines);
+  showOverlay('clear', campaignDone ? 'CAMPAIGN COMPLETE' : 'CLEAR', actions, starRow, lines);
 }
 
 function showFailed() {
   overlayRedraw = showFailed;
-  showOverlay('fail', 'CAUGHT', [['restart', 'Retry'], ['menu', 'Levels']]);
+  showOverlay('fail', 'CAUGHT', [['restart', 'Retry'], ['menu', 'Levels'], ['home', 'Main menu']]);
 }
 
 function hideOverlay() {
@@ -108,22 +170,24 @@ function hideOverlay() {
   overlay.className = 'overlay';
 }
 
-function formatTime(seconds) {
-  const s = Math.floor(seconds);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-}
+// --- levels ----------------------------------------------------------------------
 
-function startLevel() {
+function mountLevel(data, options) {
   if (level) {
     game.world.removeChild(level.root);
     level.destroy();
   }
-  level = new Level(levelData, { skin: save.selectedSkin() });
+  levelData = data;
+  level = new Level(data, options);
   game.world.addChild(level.root);
   game.app.renderer.background.color = level.palette.background;
   hideOverlay();
-  hudText = '';
+  hudHtml = '';
+  hud.replaceChildren();
+}
 
+function startLevel() {
+  mountLevel(levelData, { skin: save.selectedSkin() });
   level.on('failed', showFailed);
   level.on('completed', showResults);
 
@@ -133,41 +197,154 @@ function startLevel() {
     camera.x = level.player.x;
     camera.y = level.player.y;
   });
-  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect, touch };
+
+  // Mission card: slides in at the start of every attempt.
+  intro.replaceChildren(div('intro-tag', chapterLabel(levelData)), div('intro-name', levelData.name));
+  intro.classList.remove('show');
+  void intro.offsetWidth; // restart the animation
+  intro.classList.add('show');
+
+  exposeDebug();
 }
 
-async function goToLevel(id) {
+function exposeDebug() {
+  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect, touch, title, scene };
+}
+
+/** Fade to black, run `swap`, fade back. Skipped under reduced motion. */
+async function fadeThrough(swap) {
   loading = true;
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   try {
-    levelData = await loadLevel(id);
-    recordsProgress = campaignIds.includes(id);
-    history.replaceState(null, '', `?level=${encodeURIComponent(id)}`);
-    startLevel();
+    if (!visual.reducedMotion) {
+      veil.classList.add('on');
+      await wait(FADE_MS);
+    }
+    await swap();
   } finally {
+    veil.classList.remove('on');
     loading = false;
   }
 }
 
-function updateHud() {
-  const lines = level.objectiveStatus().map((s) => {
-    const mark = s.done ? '✓' : s.locked ? '·' : '○';
-    const count = s.total > 0 ? ` (${s.current}/${s.total})` : '';
-    return `${mark} ${s.label}${count}`;
+async function goToLevel(id) {
+  await fadeThrough(async () => {
+    const data = await loadLevel(id);
+    scene = 'play';
+    title.hide();
+    levelData = data;
+    recordsProgress = campaignIds.includes(id);
+    history.replaceState(null, '', `?level=${encodeURIComponent(id)}`);
+    startLevel();
   });
-  if (level.fullAlarm) lines.push('⚠ ALARM RAISED');
-  else if (level.alarmRunner) lines.push('⚠ A guard is running for the alarm!');
-  const radio = level.radioStatus();
-  if (radio) lines.push(radio);
-  const boss = level.bossStatus();
-  if (boss) lines.push(boss);
+}
+
+// --- main menu -------------------------------------------------------------------
+
+function titleInfo() {
+  const cleared = campaignIds.filter((id) => save.isCleared(id)).length;
+  const next = save.continueId(campaignIds);
+  const fresh = cleared === 0;
+  const allDone = cleared === campaignIds.length;
+  return {
+    stars: save.totalStars(),
+    maxStars: campaignIds.length * MAX_STARS,
+    cleared,
+    total: campaignIds.length,
+    items: [
+      {
+        id: 'play',
+        label: fresh ? 'Deploy' : 'Continue',
+        sub: allDone ? 'every mission cleared: replay the finale' : `${next ?? ''}${continueName ? ` · ${continueName}` : ''}`,
+      },
+      { id: 'levels', label: 'Missions', sub: `${cleared} of ${campaignIds.length} cleared` },
+      { id: 'skins', label: 'Loadout', sub: `${getSkin(save.selectedSkin()).name} · ${save.currency()} ★ to spend` },
+      { id: 'settings', label: 'Settings', sub: 'controls, accessibility, progress' },
+    ],
+  };
+}
+
+async function loadDemo() {
+  const ids = DEMO_LEVELS.filter(hasLevel);
+  const data = await loadLevel(ids[demoIndex % ids.length] ?? campaignIds[0]);
+  demoIndex++;
+  mountLevel(data, { demo: true });
+  demoTimer = DEMO_TIME;
+  demoClock = Math.random() * 100;
+  demoTarget.x = level.tilemap.pixelWidth / 2;
+  demoTarget.y = level.tilemap.pixelHeight / 2;
+  camera = new Camera(demoTarget, { lerpSpeed: 1.2 });
+  exposeDebug();
+}
+
+async function showTitle() {
+  await fadeThrough(async () => {
+    scene = 'title';
+    recordsProgress = false;
+    history.replaceState(null, '', location.pathname);
+    intro.classList.remove('show');
+    await loadDemo();
+    const next = save.continueId(campaignIds);
+    try {
+      continueName = next ? (await loadLevel(next)).name : '';
+    } catch {
+      continueName = '';
+    }
+    title.show(titleInfo());
+  });
+}
+
+/** The menu's backdrop: the camera wanders over the map; the level changes every so often. */
+function updateDemo(delta) {
+  demoTimer -= delta;
+  if (demoTimer <= 0) {
+    fadeThrough(loadDemo);
+    return;
+  }
+  demoClock += delta;
+  const { tilemap } = level;
+  const reachX = Math.max(0, tilemap.pixelWidth - game.app.screen.width * 0.5) / 2;
+  const reachY = Math.max(0, tilemap.pixelHeight - game.app.screen.height * 0.6) / 2;
+  if (!visual.reducedMotion) {
+    demoTarget.x = tilemap.pixelWidth / 2 + Math.sin(demoClock * 0.11) * reachX;
+    demoTarget.y = tilemap.pixelHeight / 2 + Math.sin(demoClock * 0.17 + 1) * reachY;
+  }
+  level.update(delta, input);
+  camera.bounds = null;
+  camera.update(delta);
+  camera.applyTo(game.world);
+  // The menu sits on the left, so the map is shown right of centre.
+  game.world.pivot.x -= game.app.screen.width * 0.16;
+}
+
+// --- HUD -------------------------------------------------------------------------
+
+function updateHud() {
+  const objectives = level
+    .objectiveStatus()
+    .map((s) => {
+      const state = s.done ? 'done' : s.locked ? 'locked' : 'open';
+      const count = s.total > 0 ? `<b>${s.current}/${s.total}</b>` : '';
+      return `<li class="${state}"><i></i>${escapeHtml(s.label)}${count}</li>`;
+    })
+    .join('');
+  const alert = level.fullAlarm ? 'Alarm raised' : level.alarmRunner ? 'A guard is running for the alarm' : '';
+  const notes = [level.radioStatus(), level.bossStatus()].filter(Boolean);
   const hint = level.interactionHint();
-  if (hint) lines.push(`${input.label('interact')} — ${hint}`);
-  const text = [levelData.name, ...lines].join('\n');
-  if (text !== hudText) {
-    hudText = text;
-    hud.textContent = text;
+  const html =
+    `<div class="hud-tag">${escapeHtml(chapterLabel(levelData))}</div>` +
+    `<div class="hud-name">${escapeHtml(levelData.name)}</div>` +
+    `<ul class="hud-objectives">${objectives}</ul>` +
+    (alert ? `<div class="hud-alert">${alert}</div>` : '') +
+    notes.map((note) => `<div class="hud-note">${escapeHtml(note)}</div>`).join('') +
+    (hint ? `<div class="hud-hint"><kbd>${escapeHtml(input.label('interact'))}</kbd>${escapeHtml(hint)}</div>` : '');
+  if (html !== hudHtml) {
+    hudHtml = html;
+    hud.innerHTML = html;
   }
 }
+
+// --- boot ------------------------------------------------------------------------
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -175,18 +352,18 @@ async function boot() {
     if (params.has('playtest')) {
       levelData = parseLevel(JSON.parse(localStorage.getItem(PLAYTEST_STORAGE_KEY)));
       startLevel();
-    } else {
-      // No level asked for: carry on where the save left off. `?level=` loads any
-      // level in dev (tests, editor, verification scripts); a shipped build won't
-      // open a campaign level the player hasn't unlocked.
-      const requested = params.get('level');
-      const fallback = save.continueId(campaignIds) ?? 'sandbox';
-      const allowed =
-        requested &&
-        hasLevel(requested) &&
-        (import.meta.env.DEV || !campaignIds.includes(requested) || save.isUnlocked(requested, campaignIds));
-      await goToLevel(allowed ? requested : fallback);
+      return;
     }
+    // `?level=` goes straight into a level: any level in dev (tests, editor,
+    // verification scripts); a shipped build won't open a campaign level the
+    // player hasn't unlocked. Without it, the game opens on the main menu.
+    const requested = params.get('level');
+    const allowed =
+      requested &&
+      hasLevel(requested) &&
+      (import.meta.env.DEV || !campaignIds.includes(requested) || save.isUnlocked(requested, campaignIds));
+    if (allowed) await goToLevel(requested);
+    else await showTitle();
   } catch (err) {
     console.error(err);
     showOverlay('fail', 'LEVEL ERROR', [], div('overlay-lines', err.message));
@@ -196,27 +373,41 @@ async function boot() {
 await boot();
 
 game.onUpdate((delta) => {
-  touch.setVisible(input.activeMode === 'touch' && !levelSelect.isOpen);
+  touch.setVisible(scene === 'play' && input.activeMode === 'touch' && !levelSelect.isOpen);
   if (!level || loading) return;
 
-  // The menu pauses the game underneath it.
-  if (game.input.wasActionPressed('menu') || (levelSelect.isOpen && game.input.wasActionPressed('back'))) {
-    if (levelSelect.isOpen) levelSelect.close();
-    else levelSelect.open(levelData.id);
-    return;
-  }
+  // The Esc menu pauses the level underneath it (the demo keeps running behind the main menu).
   if (levelSelect.isOpen) {
-    levelSelect.handleInput(game.input);
+    if (input.wasActionPressed('menu') || input.wasActionPressed('back')) levelSelect.close();
+    else if (scene === 'play' && input.wasActionPressed('home')) {
+      levelSelect.close({ silent: true });
+      showTitle();
+    } else levelSelect.handleInput(input);
+    if (scene === 'title') updateDemo(delta);
     return;
   }
 
-  if (game.input.wasActionPressed('restart')) startLevel();
-  if (level.completed && game.input.wasActionPressed('confirm')) {
+  if (scene === 'title') {
+    title.handleInput(input);
+    updateDemo(delta);
+    return;
+  }
+
+  if (input.wasActionPressed('menu')) {
+    levelSelect.open(levelData.id, { home: true });
+    return;
+  }
+  if (level.finished && input.wasActionPressed('home')) {
+    showTitle();
+    return;
+  }
+  if (input.wasActionPressed('restart')) startLevel();
+  if (level.completed && input.wasActionPressed('confirm')) {
     const next = nextLevelId(levelData.id);
     if (next) goToLevel(next);
   }
 
-  level.update(delta, game.input);
+  level.update(delta, input);
   updateHud();
 
   const { tilemap } = level;

@@ -106,8 +106,10 @@ const OBJECTIVE_LABELS = {
  * 'transit' when the player arrives by stairs or elevator.
  */
 export class Level extends EventEmitter {
-  constructor(data, { skin } = {}) {
+  constructor(data, { skin, demo = false } = {}) {
     super();
+    // Demo: the level runs with nobody in it (the main menu's backdrop).
+    this.demo = demo;
     this.data = data;
     this.palette = paletteFor(data.chapter);
     this.tilemap = new Tilemap(data.cols, data.rows, data.grid, this.palette);
@@ -147,6 +149,11 @@ export class Level extends EventEmitter {
     );
 
     this.player = new Player(data.spawn.x, data.spawn.y, skin);
+    if (demo) {
+      // Reuses the elevator-ride state: invisible and unseen by everything.
+      this.player.inTransit = true;
+      this.player._syncView();
+    }
     this.panels = data.panels.map((config) => new AlarmPanel(config));
     const panelsById = new Map(this.panels.filter((p) => p.id).map((p) => [p.id, p]));
     this.lasers = data.lasers.map((config) => {
@@ -236,7 +243,9 @@ export class Level extends EventEmitter {
     const { player } = this;
     this.time += dt;
 
-    if (!this.finished) {
+    if (this.demo) {
+      // No player to update; guards, cameras and boats below just keep their rounds.
+    } else if (!this.finished) {
       this.stats.elapsed += dt;
       this._updateTransit(dt);
       this._updatePlayer(dt, input);

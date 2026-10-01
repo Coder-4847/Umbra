@@ -30,8 +30,11 @@ const SKIN_COLUMNS = 4;
  * rest of the game; everything is clickable too.
  */
 export class LevelSelect {
-  constructor({ chapters, campaignIds, save, input, onPick, onSkinChange }) {
+  constructor({ chapters, campaignIds, save, input, onPick, onSkinChange, onHome, onClose }) {
     this.input = input;
+    this.onHome = onHome;
+    this.onClose = onClose;
+    this.canGoHome = false;
     this.settings = new SettingsPane({
       input,
       save,
@@ -59,6 +62,7 @@ export class LevelSelect {
       const card = e.target.closest('.skin-card');
       const row = e.target.closest('.settings-row');
       if (e.target.closest('.ls-close')) this.close();
+      else if (e.target.closest('.ls-home')) this.onHome?.();
       else if (row) this.settings.activate(Number(row.dataset.row));
       else if (this.settings.capturing) return;
       else if (tab) this._setTab(tab.dataset.tab);
@@ -75,8 +79,11 @@ export class LevelSelect {
     document.body.append(this.root);
   }
 
-  open(currentId) {
+  /** `tab`: which tab to show; `home`: offer "main menu" (only while playing a level). */
+  open(currentId, { tab = 'levels', home = false } = {}) {
     this.isOpen = true;
+    this.tab = tab;
+    this.canGoHome = home;
     this.message = '';
     const focus = this.campaignIds.includes(currentId) ? currentId : this.save.continueId(this.campaignIds);
     const row = this.chapters.findIndex((chapter) => chapter.ids.includes(focus));
@@ -87,11 +94,13 @@ export class LevelSelect {
     this.root.classList.add('visible');
   }
 
-  close() {
+  /** `silent`: don't report the close (the caller is about to change scene itself). */
+  close({ silent = false } = {}) {
     if (this.settings.capturing) return; // a key is being rebound; Esc cancels that first
     this.settings.reset();
     this.isOpen = false;
     this.root.classList.remove('visible');
+    if (!silent) this.onClose?.();
   }
 
   handleInput(input) {
@@ -172,6 +181,14 @@ export class LevelSelect {
     const close = el('button', 'ls-close', '✕');
     close.type = 'button';
     close.tabIndex = -1;
+    if (this.canGoHome) {
+      const home = el('button', 'ls-home');
+      home.type = 'button';
+      home.tabIndex = -1;
+      if (this.input.activeMode !== 'touch') home.append(el('kbd', '', this.input.label('home')));
+      home.append(document.createTextNode('Main menu'));
+      header.append(home);
+    }
     header.append(
       close,
       tabs,

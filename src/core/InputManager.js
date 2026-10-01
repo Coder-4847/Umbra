@@ -10,6 +10,7 @@ const DEFAULT_BINDINGS = {
   confirm: ['Enter', 'NumpadEnter'],
   menu: ['Escape'],
   back: [],
+  home: ['Backspace'],
   tabPrev: ['KeyQ'],
   tabNext: ['KeyE', 'Tab'],
 };
@@ -27,7 +28,7 @@ export const ACTION_NAMES = {
   restart: 'Restart level',
 };
 /** Keys the menus rely on; they can't be given to a gameplay action. */
-const RESERVED_CODES = new Set(['Escape', 'Enter', 'NumpadEnter', 'Tab']);
+const RESERVED_CODES = new Set(['Escape', 'Enter', 'NumpadEnter', 'Tab', 'Backspace']);
 
 export const INPUT_MODES = ['auto', 'keyboard', 'gamepad', 'touch'];
 
@@ -41,6 +42,7 @@ const PAD_BUTTONS = {
   5: ['tabNext'], // RB
   6: ['sprint'], // LT
   7: ['sprint'], // RT
+  8: ['home'], // Back / Select
   9: ['menu'], // Start
   12: ['up'],
   13: ['down'],
@@ -52,14 +54,14 @@ const STICK_DIRECTION = 0.5;
 
 const PAD_LABELS = {
   attack: 'A', confirm: 'A', back: 'B', interact: 'X', restart: 'Y',
-  tabPrev: 'LB', tabNext: 'RB', sprint: 'RT', menu: 'Start',
+  tabPrev: 'LB', tabNext: 'RB', sprint: 'RT', menu: 'Start', home: 'Back',
 };
 const TOUCH_LABELS = { attack: 'Attack', interact: 'Use', restart: '↻', menu: '☰', confirm: 'Tap' };
 const CODE_LABELS = {
   Space: 'Space', Escape: 'Esc', Enter: 'Enter', NumpadEnter: 'Enter', Tab: 'Tab',
   ShiftLeft: 'Shift', ShiftRight: 'R Shift', ControlLeft: 'Ctrl', ControlRight: 'R Ctrl', AltLeft: 'Alt', AltRight: 'R Alt',
   ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
-  Mouse0: 'Click', Mouse1: 'Middle click', Mouse2: 'Right click', Backspace: 'Backspace',
+  Mouse0: 'Click', Mouse1: 'Middle click', Mouse2: 'Right click', Backspace: '⌫',
 };
 
 export function codeLabel(code) {

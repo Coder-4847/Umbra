@@ -222,5 +222,61 @@
     "target": 145,
     "plan": "stab0@0.7 stab3@3.1 stab4@7.2 stab2@10.4 stab1@15.3",
     "fix": "renamed Last Watch -> Frostline (05-09 keeps Last Watch). Also played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
+  },
+  "05-01": {
+    "tier": "safe",
+    "seconds": 5.22,
+    "target": 55,
+    "plan": "stab0@3.1"
+  },
+  "05-02": {
+    "tier": "safe",
+    "seconds": 11.07,
+    "target": 70,
+    "plan": "stab1@6.5 stab0@8.4"
+  },
+  "05-03": {
+    "tier": "safe",
+    "seconds": 5.2,
+    "target": 65,
+    "plan": "stab0@0.9"
+  },
+  "05-04": {
+    "tier": "safe",
+    "seconds": 6.95,
+    "target": 85,
+    "plan": "stab0@2.1"
+  },
+  "05-05": {
+    "tier": "safe",
+    "seconds": 11.47,
+    "target": 95,
+    "plan": "stab0@9.3",
+    "fix": "BUG: the pacing guard (x=20, y 3-14) walked into the stationary target sentry at (20,8) and both jammed there for good, so nothing ever patrolled. Pacing guard moved to x=22"
+  },
+  "05-06": {
+    "tier": "safe",
+    "seconds": 7.47,
+    "target": 105,
+    "plan": "stab0@1.7 stab2@4.1 stab1@5.6"
+  },
+  "05-07": {
+    "tier": "safe",
+    "seconds": 19.08,
+    "target": 115,
+    "plan": "intel1@3.6 intel2@6.5 intel0@15.5"
+  },
+  "05-08": {
+    "tier": "safe",
+    "seconds": 12.68,
+    "target": 130,
+    "plan": "stab0@0.7 stab1@5.2 stab2@6.3 stab3@8.9"
+  },
+  "05-09": {
+    "tier": "safe",
+    "seconds": 15.07,
+    "target": 145,
+    "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab2@10.4 stab4@14.1",
+    "fix": "no level change: the exit tile centre is 45px from a bird flock, so reaching the exit flushes it (harmless, the level ends first). Played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
   }
 }

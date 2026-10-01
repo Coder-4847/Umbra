@@ -132,8 +132,17 @@ class Planner {
       lvl.update(DT, input);
       for (const g of lvl.guards) if (g.state !== 'patrol' && !this.anomalies.length) this.anomalies.push(`guard ${this.G.findIndex((e) => e.ref === g)} ${g.state} at ${(f / 60).toFixed(1)}s`);
     }
-    const size = (this.horizon / FPL + 2) * 4400; // upper bound on ncell * layers, sized lazily below
-    this._cacheSize = size;
+    // A guard with a real route that barely moves during the last third of the recording is jammed
+    // (typically pushed against another guard it keeps colliding with).
+    this.G.forEach((e, gi) => {
+      const pts = e.ref.patrol;
+      if (pts.length < 2 || !pts.some((q) => Math.hypot(q.x - pts[0].x, q.y - pts[0].y) > 40)) return; // standing sentries don't count
+      const f1 = n - 1;
+      const f0 = Math.floor(n * 0.66);
+      let travelled = 0;
+      for (let f = f0 + 60; f <= f1; f += 60) travelled += Math.hypot(e.x[f] - e.x[f - 60], e.y[f] - e.y[f - 60]);
+      if (travelled < 40) this.anomalies.push(`guard ${gi} is stuck (moved ${travelled.toFixed(0)}px in the last ${((f1 - f0) / 60).toFixed(0)}s)`);
+    });
   }
 
   _entityCache(e) {
@@ -219,8 +228,8 @@ class Planner {
 
   // --- contexts: which enemies are alive / which panels are hacked ----------------------------
 
-  ctx(alive, hacked, cut = null) {
-    const key = alive.join('') + '|' + [...hacked].sort().join(',') + (cut ? `|cut${cut.gi}@${cut.tk}` : '');
+  ctx(alive, hacked, cut = null, noBirds = false) {
+    const key = alive.join('') + '|' + [...hacked].sort().join(',') + (cut ? `|cut${cut.gi}@${cut.tk}` : '') + (noBirds ? '|nb' : '');
     let ctx = this.ctxs.get(key);
     if (!ctx) {
       ctx = {
@@ -229,6 +238,7 @@ class Planner {
         camOn: this.C.map((cam) => !(cam.panel && hacked.has(cam.panel))),
         laserOn: this.data.lasers.map((l) => !(l.panel && hacked.has(l.panel))),
         cut,
+        noBirds,
         cache: new Uint8Array((this.layers + 2) * this.ncell),
       };
       this.ctxs.set(key, ctx);
@@ -240,7 +250,7 @@ class Planner {
     const idx = k * this.ncell + c;
     const v = ctx.cache[idx];
     if (v) return v === 1;
-    let ok = !this.bird[c];
+    let ok = ctx.noBirds || !this.bird[c];
     for (let i = 0; ok && i < this.G.length; i++) if (ctx.alive[i] && this.expo(this.G[i], c, k)) ok = false;
     for (let i = 0; ok && i < this.C.length; i++) if (ctx.camOn[i] && this.expo(this.C[i], c, k)) ok = false;
     for (let i = 0; ok && i < this.data.lasers.length; i++) if (ctx.laserOn[i] && this.laserBlocked(i, c, k)) ok = false;
@@ -276,7 +286,8 @@ class Planner {
    */
   bfs(state, goal, limitFrame, maxEvents, tk = null) {
     // With a kill deadline `tk`, prints the target guard could only see after it is dead don't matter.
-    const ctx = this.ctx(state.alive, state.hacked, goal.type === 'stab' && tk !== null ? { gi: goal.gi, tk } : null);
+    // Flocks near the exit go up on the way in; the level ends before any guard can answer, so the last leg ignores them.
+    const ctx = this.ctx(state.alive, state.hacked, goal.type === 'stab' && tk !== null ? { gi: goal.gi, tk } : null, goal.type === 'exit');
     const childAlive = state.alive.slice();
     const childHacked = new Set(state.hacked);
     if (goal.type === 'stab') childAlive[goal.gi] = 0;
@@ -798,4 +809,27 @@ export async function fixSearch(id, { kinds = ['camSweep', 'camLook', 'camMove',
     if (real.completed && real.detections === 0 && real.bodiesDiscovered === 0 && real.hp === 3) hits.push({ label: m.label, seconds: real.elapsed });
   }
   return { hits, next: n, done: true };
+}
+
+/** Where does the flood fill from the spawn toward `goal` stop, and what blocks it? Returns text. */
+export async function diagnose(id, goal, opts = {}) {
+  const r = await plan(id, { ...opts, budget: 1 });
+  const P = r.planner;
+  P.debug = true;
+  P.reachLog = [];
+  const spawn = P.cell(P.data.spawn.x, P.data.spawn.y);
+  const state = { k: 0, c: spawn, alive: P.G.map(() => 1), hacked: new Set(), path: [spawn], done: [], bodies: [], marks: [] };
+  const events = P.bfs(state, goal, P.horizon, 1);
+  const lines = [`events ${events.length}; ${P.reachLog.length} layers, died at ${P.lastBfs?.layer} (${(((P.lastBfs?.layer ?? 0) * FPL) / 60).toFixed(1)}s)`];
+  P.reachLog.forEach((act, i) => {
+    if (i % Math.max(12, Math.ceil(P.reachLog.length / 10)) && i < P.reachLog.length - 2) return;
+    let x0 = 1e9, x1 = -1, y0 = 1e9, y1 = -1;
+    for (const c of act) {
+      x0 = Math.min(x0, P.cpx[c] / 32); x1 = Math.max(x1, P.cpx[c] / 32);
+      y0 = Math.min(y0, P.cpy[c] / 32); y1 = Math.max(y1, P.cpy[c] / 32);
+    }
+    const gs = P.G.map((g, gi) => `g${gi}=(${(g.x[(i + 1) * FPL] / 32).toFixed(1)},${(g.y[(i + 1) * FPL] / 32).toFixed(1)})`).join(' ');
+    lines.push(`t=${(((i + 1) * FPL) / 60).toFixed(1)}s n=${act.length} x[${x0.toFixed(1)},${x1.toFixed(1)}] y[${y0.toFixed(1)},${y1.toFixed(1)}] ${gs}`);
+  });
+  return lines.join('\n');
 }

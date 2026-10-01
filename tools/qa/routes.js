@@ -666,6 +666,7 @@ export async function playKeyboard(id, opts = {}) {
   };
   key('keydown', 'KeyR'); key('keyup', 'KeyR'); game._update(DT);
   if (lvl().data.id !== id) return { id, ok: false, error: `page is on ${lvl().data.id}, not ${id}` };
+  lvl().player.smooth = false; // the plan assumes exact movement; with easing the keyboard would drift off the lattice
   const actions = new Map();
   for (const m of result.marks) {
     if (m.type === 'stab') actions.set(m.k * FPL, 'Space');

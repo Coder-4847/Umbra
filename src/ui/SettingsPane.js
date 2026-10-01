@@ -1,3 +1,4 @@
+import { applyVisualSettings, visual } from '../core/visual.js';
 import { ACTION_NAMES, INPUT_MODES, REBINDABLE_ACTIONS, codeLabel } from '../core/InputManager.js';
 
 const el = (tag, className, text) => {
@@ -24,7 +25,7 @@ export class SettingsPane {
     this.capturing = null; // action waiting for a key
     this.confirmReset = false;
     this.message = '';
-    this.rows = ['mode', ...REBINDABLE_ACTIONS.map((action) => `bind:${action}`), 'resetKeys', 'resetProgress'];
+    this.rows = ['mode', 'colorblind', 'reducedMotion', ...REBINDABLE_ACTIONS.map((action) => `bind:${action}`), 'resetKeys', 'resetProgress'];
   }
 
   reset() {
@@ -57,7 +58,10 @@ export class SettingsPane {
     this.message = '';
 
     if (row === 'mode') this._cycleMode(1);
-    else if (row.startsWith('bind:')) this._capture(row.slice(5));
+    else if (row === 'colorblind' || row === 'reducedMotion') {
+      this.save.setSettings({ [row]: !visual[row] });
+      applyVisualSettings(this.save.data.settings);
+    } else if (row.startsWith('bind:')) this._capture(row.slice(5));
     else if (row === 'resetKeys') {
       this.input.resetBindings();
       this._persist();
@@ -111,6 +115,10 @@ export class SettingsPane {
       if (row === 'mode') {
         const detail = input.mode === 'auto' ? ` (${MODE_NAMES[input.activeMode]})` : '';
         addRow(index, 'Input mode', `◂ ${MODE_NAMES[input.mode]}${detail} ▸`);
+      } else if (row === 'colorblind') {
+        addRow(index, 'Colorblind-safe vision cones', visual.colorblind ? 'On' : 'Off');
+      } else if (row === 'reducedMotion') {
+        addRow(index, 'Reduced motion', visual.reducedMotion ? 'On' : 'Off');
       } else if (row.startsWith('bind:')) {
         const action = row.slice(5);
         const value = this.capturing === action ? 'Press a key… (Esc cancels)' : input.bindings[action].map(codeLabel).join(' / ');

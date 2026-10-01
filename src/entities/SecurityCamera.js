@@ -1,3 +1,4 @@
+import { coneColors } from '../core/visual.js';
 import { Container, EventEmitter, Graphics } from 'pixi.js';
 import { hasLineOfSight, raycast } from '../world/raycast.js';
 import { angleDiff, clamp, lerpColor, turnToward } from '../core/math.js';
@@ -249,7 +250,8 @@ export class SecurityCamera extends EventEmitter {
   }
 
   _coneColor() {
-    return this.state === CameraState.ALARM ? COLOR.alarm : lerpColor(this.idleColor, COLOR.alarm, this.meter);
+    const alarm = coneColors().alert;
+    return this.state === CameraState.ALARM ? alarm : lerpColor(this.idleColor, alarm, this.meter);
   }
 
   _syncView() {

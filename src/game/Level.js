@@ -1,5 +1,6 @@
 import { Container, EventEmitter, Graphics } from 'pixi.js';
 import { Tilemap } from '../world/Tilemap.js';
+import { paletteFor } from '../world/palettes.js';
 import { TILE_SIZE } from '../world/tiles.js';
 import { Effects } from '../world/Effects.js';
 import { SnowTracks } from '../world/SnowTracks.js';
@@ -108,7 +109,8 @@ export class Level extends EventEmitter {
   constructor(data, { skin } = {}) {
     super();
     this.data = data;
-    this.tilemap = new Tilemap(data.cols, data.rows, data.grid);
+    this.palette = paletteFor(data.chapter);
+    this.tilemap = new Tilemap(data.cols, data.rows, data.grid, this.palette);
     this.effects = new Effects();
     this.markers = new Graphics();
     this.tracks = new SnowTracks(this.tilemap);

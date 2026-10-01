@@ -1,3 +1,4 @@
+import { coneColors } from '../core/visual.js';
 import { Container, EventEmitter, Graphics, Text } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
@@ -64,7 +65,6 @@ const AIM_TOLERANCE = (12 * Math.PI) / 180;
 const PANEL_PRESS_TIME = 1;
 const PANEL_PRESS_REACH = 40;
 
-const CONE_COLORS = { patrol: 0xfff3b0, suspicious: 0xffa53d, alert: 0xff4545 };
 const CONE_ALPHA = { patrol: 0.14, suspicious: 0.18, alert: 0.22 };
 
 /**
@@ -592,15 +592,15 @@ export class Guard extends EventEmitter {
   _coneColor() {
     switch (this.state) {
       case GuardState.ALERT:
-        return CONE_COLORS.alert;
+        return coneColors().alert;
       case GuardState.SUSPICIOUS:
         return lerpColor(
-          CONE_COLORS.suspicious,
-          CONE_COLORS.alert,
+          coneColors().suspicious,
+          coneColors().alert,
           (this.meter - SUSPICIOUS_THRESHOLD) / (1 - SUSPICIOUS_THRESHOLD),
         );
       default:
-        return lerpColor(CONE_COLORS.patrol, CONE_COLORS.suspicious, this.meter / SUSPICIOUS_THRESHOLD);
+        return lerpColor(coneColors().patrol, coneColors().suspicious, this.meter / SUSPICIOUS_THRESHOLD);
     }
   }
 
@@ -613,13 +613,13 @@ export class Guard extends EventEmitter {
       this._indicatorState = indicatorState;
       if (this.alarmRun) {
         this.indicator.text = '!!';
-        this.indicator.style.fill = CONE_COLORS.alert;
+        this.indicator.style.fill = coneColors().alert;
       } else if (this.state === GuardState.ALERT) {
         this.indicator.text = '!';
-        this.indicator.style.fill = CONE_COLORS.alert;
+        this.indicator.style.fill = coneColors().alert;
       } else if (this.state === GuardState.SUSPICIOUS) {
         this.indicator.text = '?';
-        this.indicator.style.fill = CONE_COLORS.suspicious;
+        this.indicator.style.fill = coneColors().suspicious;
       } else {
         this.indicator.text = '';
       }
@@ -661,7 +661,7 @@ export class Guard extends EventEmitter {
       this.coneView
         .moveTo(this.x, this.y)
         .lineTo(this.aimTarget.x, this.aimTarget.y)
-        .stroke({ width: 1 + progress * 1.5, color: CONE_COLORS.alert, alpha: 0.25 + progress * 0.65 });
+        .stroke({ width: 1 + progress * 1.5, color: coneColors().alert, alpha: 0.25 + progress * 0.65 });
     }
 
     // Alarm-run telegraph: a dashed line to the panel so the player knows who to stop.
@@ -675,7 +675,7 @@ export class Guard extends EventEmitter {
         this.coneView
           .moveTo(this.x + (dx * d) / length, this.y + (dy * d) / length)
           .lineTo(this.x + (dx * end) / length, this.y + (dy * end) / length)
-          .stroke({ width: 2, color: CONE_COLORS.alert, alpha: 0.7 });
+          .stroke({ width: 2, color: coneColors().alert, alpha: 0.7 });
       }
     }
   }

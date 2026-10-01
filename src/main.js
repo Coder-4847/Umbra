@@ -3,6 +3,7 @@ import { Game } from './core/Game.js';
 import { Camera } from './core/Camera.js';
 import { Level } from './game/Level.js';
 import { SaveData } from './core/SaveData.js';
+import { applyVisualSettings } from './core/visual.js';
 import { MAX_STARS, missedReasons, rateLevel } from './game/rating.js';
 import { campaignIds, chapters, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
 import { LevelSelect } from './ui/LevelSelect.js';
@@ -23,6 +24,7 @@ document.body.append(hud, overlay);
 const save = new SaveData();
 const { input } = game;
 input.applySettings(save.data.settings);
+applyVisualSettings(save.data.settings);
 const touch = new TouchControls(input);
 const levelSelect = new LevelSelect({
   chapters,
@@ -118,6 +120,7 @@ function startLevel() {
   }
   level = new Level(levelData, { skin: save.selectedSkin() });
   game.world.addChild(level.root);
+  game.app.renderer.background.color = level.palette.background;
   hideOverlay();
   hudText = '';
 

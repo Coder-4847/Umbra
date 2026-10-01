@@ -278,5 +278,61 @@
     "target": 145,
     "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab2@10.4 stab4@14.1",
     "fix": "no level change: the exit tile centre is 45px from a bird flock, so reaching the exit flushes it (harmless, the level ends first). Played with real keyboard events in the live game: completed, 5/5 silent, 0 detections"
+  },
+  "06-01": {
+    "tier": "safe",
+    "seconds": 5.22,
+    "target": 55,
+    "plan": "stab0@3.1"
+  },
+  "06-02": {
+    "tier": "safe",
+    "seconds": 5.75,
+    "target": 65,
+    "plan": "stab0@3.3"
+  },
+  "06-03": {
+    "tier": "safe",
+    "seconds": 5.73,
+    "target": 75,
+    "plan": "stab0@3.1"
+  },
+  "06-04": {
+    "tier": "safe",
+    "seconds": 6.27,
+    "target": 85,
+    "plan": "stab0@3.9"
+  },
+  "06-05": {
+    "tier": "safe",
+    "seconds": 18.67,
+    "target": 95,
+    "plan": "stab0@16.5",
+    "fix": "BUG (same as 05-05): the pacing guard (x=20) walked into the stationary target sentry at (20,8) and both jammed for good. Pacing guard moved to x=22. Also played with real keyboard events in the live game: completed, 0 detections"
+  },
+  "06-06": {
+    "tier": "safe",
+    "seconds": 20.02,
+    "target": 105,
+    "plan": "intel1@4.8 intel0@13.3 intel2@16.4"
+  },
+  "06-07": {
+    "tier": "safe",
+    "seconds": 16.53,
+    "target": 115,
+    "plan": "stab0@0.9 stab2@9.2 stab1@15.2",
+    "fix": "no level change. Played with real keyboard events in the live game: completed, 3/3 silent, 0 detections, 0 lasers tripped"
+  },
+  "06-08": {
+    "tier": "safe",
+    "seconds": 15.57,
+    "target": 130,
+    "plan": "stab0@0.7 stab1@5.2 stab2@6.3 stab3@13.5"
+  },
+  "06-09": {
+    "tier": "safe",
+    "seconds": 15.07,
+    "target": 150,
+    "plan": "stab0@0.7 stab3@4.9 stab1@5.5 stab2@10.4 stab4@14.1"
   }
 }

@@ -418,7 +418,7 @@ class Planner {
   }
 
   solve() {
-    if (this.data.objectives.includes('defeatBoss')) return { error: 'boss levels are not supported by the planner' };
+    if (this.data.objectives.includes('defeatBoss')) return { error: 'boss levels are not supported by the planner', anomalies: this.anomalies };
     const goals = this.goalsFor();
     const spawn = this.cell(this.data.spawn.x, this.data.spawn.y);
     const alive = this.G.map(() => 1);
@@ -832,4 +832,15 @@ export async function diagnose(id, goal, opts = {}) {
     lines.push(`t=${(((i + 1) * FPL) / 60).toFixed(1)}s n=${act.length} x[${x0.toFixed(1)},${x1.toFixed(1)}] y[${y0.toFixed(1)},${y1.toFixed(1)}] ${gs}`);
   });
   return lines.join('\n');
+}
+
+/** Records every level's guards with nobody in it and reports jammed guards / guards that left patrol. */
+export async function anomalySweep(ids) {
+  const out = [];
+  for (const id of ids) {
+    const data = await loadLevel(id);
+    const planner = new Planner(data, { horizonFactor: 1.5 });
+    if (planner.anomalies.length) out.push(`${id}: ${planner.anomalies.join('; ')}`);
+  }
+  return out;
 }

@@ -1,3 +1,10 @@
+// Fonts ship with the game (no Google Fonts request), so it also works offline.
+import '@fontsource/saira-condensed/latin-400.css';
+import '@fontsource/saira-condensed/latin-500.css';
+import '@fontsource/saira-condensed/latin-600.css';
+import '@fontsource/saira-condensed/latin-700.css';
+import '@fontsource/saira-condensed/latin-800.css';
+import '@fontsource/saira-stencil-one/latin-400.css';
 import './style.css';
 import { audio } from './core/Audio.js';
 import { Game } from './core/Game.js';

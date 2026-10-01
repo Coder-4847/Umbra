@@ -1,5 +1,6 @@
 import { SKINS, skinSvg } from '../entities/skins.js';
 import { MAX_STARS } from '../game/rating.js';
+import { SettingsPane } from './SettingsPane.js';
 
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -15,19 +16,29 @@ export function starString(stars) {
 const TABS = [
   { id: 'levels', label: 'Levels' },
   { id: 'skins', label: 'Skins' },
+  { id: 'settings', label: 'Settings' },
 ];
 const SKIN_COLUMNS = 4;
 
 /**
- * The Esc menu, two tabs:
- *   Levels  one row per chapter, stars under each level, locked levels greyed
- *   Skins   cosmetic skins bought with stars
+ * The Esc menu, three tabs:
+ *   Levels    one row per chapter, stars under each level, locked levels greyed
+ *   Skins     cosmetic skins bought with stars
+ *   Settings  input mode, key rebinding, reset progress (SettingsPane.js)
  * Minimal on purpose; Phase 12 restyles it. Driven from the game loop
  * (`handleInput`) so it shares the InputManager's per-frame presses with the
  * rest of the game; everything is clickable too.
  */
 export class LevelSelect {
-  constructor({ chapters, campaignIds, save, onPick, onSkinChange }) {
+  constructor({ chapters, campaignIds, save, input, onPick, onSkinChange }) {
+    this.input = input;
+    this.settings = new SettingsPane({
+      input,
+      save,
+      onChange: () => this.isOpen && this._render(),
+      onProgressReset: () => onSkinChange?.(save.selectedSkin()),
+    });
+    input.onModeChange(() => this.isOpen && this._render());
     this.chapters = chapters;
     this.campaignIds = campaignIds;
     this.save = save;
@@ -46,7 +57,11 @@ export class LevelSelect {
       const tab = e.target.closest('.ls-tab');
       const cell = e.target.closest('.ls-cell');
       const card = e.target.closest('.skin-card');
-      if (tab) this._setTab(tab.dataset.tab);
+      const row = e.target.closest('.settings-row');
+      if (e.target.closest('.ls-close')) this.close();
+      else if (row) this.settings.activate(Number(row.dataset.row));
+      else if (this.settings.capturing) return;
+      else if (tab) this._setTab(tab.dataset.tab);
       else if (cell) this._pick(cell.dataset.id);
       else if (card) {
         this.skinIndex = SKINS.findIndex((skin) => skin.id === card.dataset.id);
@@ -73,11 +88,14 @@ export class LevelSelect {
   }
 
   close() {
+    if (this.settings.capturing) return; // a key is being rebound; Esc cancels that first
+    this.settings.reset();
     this.isOpen = false;
     this.root.classList.remove('visible');
   }
 
   handleInput(input) {
+    if (this.settings.capturing) return;
     if (input.wasActionPressed('tabNext') || input.wasActionPressed('tabPrev')) {
       const step = input.wasActionPressed('tabNext') ? 1 : -1;
       const index = TABS.findIndex((tab) => tab.id === this.tab);
@@ -95,6 +113,8 @@ export class LevelSelect {
         this._highlight();
       }
       if (input.wasActionPressed('confirm')) this._pick(this.chapters[this.row].ids[this.col]);
+    } else if (this.tab === 'settings') {
+      this.settings.handleInput(input);
     } else {
       if (dRow || dCol) {
         const next = this.skinIndex + dCol + dRow * SKIN_COLUMNS;
@@ -109,6 +129,7 @@ export class LevelSelect {
   _setTab(tab) {
     this.tab = tab;
     this.message = '';
+    this.settings.reset();
     this._render();
   }
 
@@ -148,16 +169,24 @@ export class LevelSelect {
       button.dataset.tab = tab.id;
       tabs.append(button);
     }
+    const close = el('button', 'ls-close', '✕');
+    close.type = 'button';
+    close.tabIndex = -1;
     header.append(
+      close,
       tabs,
       el('div', 'ls-total', `★ ${save.totalStars()} / ${campaignIds.length * MAX_STARS}   ·   ${save.currency()} to spend`),
     );
 
     const levels = this.tab === 'levels';
-    const hint = levels
-      ? 'Arrows / WASD: move  ·  Enter: play  ·  Q / E: skins  ·  Esc: back'
-      : 'Arrows / WASD: move  ·  Enter: buy / equip  ·  Q / E: levels  ·  Esc: back';
-    this.root.replaceChildren(header, levels ? this._levelGrid() : this._skinGrid(), el('div', 'ls-hint', hint));
+    const L = (action) => this.input.label(action);
+    const verb = { levels: 'play', skins: 'buy / equip', settings: 'change' }[this.tab];
+    const hint =
+      this.input.activeMode === 'touch'
+        ? 'Tap to choose  ·  ✕: back'
+        : `${L('confirm')}: ${verb}  ·  ${L('tabPrev')} / ${L('tabNext')}: tabs  ·  ${L('menu')}: back`;
+    const pane = levels ? this._levelGrid() : this.tab === 'skins' ? this._skinGrid() : this.settings.render();
+    this.root.replaceChildren(header, pane, el('div', 'ls-hint', hint));
     if (levels) this._highlight();
   }
 

@@ -349,3 +349,226 @@ canvas {
     grid-template-columns: repeat(5, minmax(0, 1fr));
   }
 }
+
+/* Overlay action buttons (clickable / tappable; also show the key or button) */
+.overlay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.overlay.visible .overlay-actions {
+  pointer-events: auto;
+}
+
+.overlay-action {
+  padding: 10px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.07);
+  color: inherit;
+  font: 600 13px system-ui, sans-serif;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.overlay-action:hover {
+  background: rgba(255, 255, 255, 0.16);
+  transform: translateY(-1px);
+}
+
+/* Menu close button and settings tab */
+.ls-close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  color: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.settings-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(100%, 560px);
+}
+
+.settings-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 9px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+  color: inherit;
+  font: 14px system-ui, sans-serif;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.settings-row.selected {
+  border-color: #ffd166;
+  background: rgba(255, 209, 102, 0.12);
+}
+
+.settings-row.capturing .settings-value {
+  color: #4ade80;
+}
+
+.settings-row.danger {
+  border-color: #ff4545;
+  background: rgba(255, 69, 69, 0.14);
+}
+
+.settings-value {
+  color: #ffd166;
+  text-align: right;
+}
+
+.settings-row.danger .settings-value {
+  color: #ff8a8a;
+}
+
+.settings-message {
+  min-height: 20px;
+  font-size: 14px;
+  text-align: center;
+}
+
+.settings-pane .skin-note {
+  text-align: center;
+}
+
+/* Touch controls */
+html,
+body {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.touch {
+  position: fixed;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+}
+
+.touch.visible {
+  display: block;
+}
+
+.touch-zone {
+  position: absolute;
+  left: 0;
+  top: 64px;
+  bottom: 0;
+  width: 55%;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.touch-stick {
+  position: absolute;
+  width: 112px;
+  height: 112px;
+  margin: -56px 0 0 -56px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  opacity: 0;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.touch-stick.active {
+  opacity: 1;
+}
+
+.touch-stick.sprint {
+  border-color: #ffb347;
+}
+
+.touch-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 48px;
+  height: 48px;
+  margin: -24px 0 0 -24px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.touch-stick.sprint .touch-knob {
+  background: rgba(255, 179, 71, 0.75);
+}
+
+.touch-btn {
+  position: absolute;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-radius: 50%;
+  background: rgba(20, 20, 28, 0.55);
+  color: #f5f5fa;
+  font: 700 14px system-ui, sans-serif;
+  pointer-events: auto;
+  touch-action: none;
+  transition: transform 0.08s ease, background 0.08s ease;
+}
+
+.touch-btn:active {
+  transform: scale(0.92);
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.touch-attack {
+  right: 24px;
+  bottom: 28px;
+  width: 84px;
+  height: 84px;
+  font-size: 30px;
+  border-color: rgba(255, 99, 99, 0.6);
+}
+
+.touch-use {
+  right: 122px;
+  bottom: 22px;
+  width: 62px;
+  height: 62px;
+}
+
+.touch-small {
+  top: 12px;
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+}
+
+.touch-pause {
+  right: 12px;
+}
+
+.touch-restart {
+  right: 66px;
+}
+
+/* Stacking: touch controls < overlays < menu */
+.overlay {
+  z-index: 5;
+}
+
+.level-select {
+  z-index: 10;
+}

@@ -21,6 +21,7 @@ function migrate(raw) {
   // Future versions convert older blobs here before the merge below.
   const data = { ...emptySave(), ...raw, version: SAVE_VERSION };
   if (!Array.isArray(data.ownedSkins)) data.ownedSkins = [];
+  if (!data.settings || typeof data.settings !== 'object') data.settings = {};
   return data;
 }
 
@@ -53,8 +54,16 @@ export class SaveData {
     }
   }
 
+  /** Erase progress (stars, unlocks, skins). Settings are kept. */
   reset() {
-    this.data = emptySave();
+    const { settings } = this.data;
+    this.data = { ...emptySave(), settings };
+    this.save();
+  }
+
+  /** Merge into the stored settings (`inputMode`, `bindings`, ...). */
+  setSettings(patch) {
+    this.data.settings = { ...this.data.settings, ...patch };
     this.save();
   }
 

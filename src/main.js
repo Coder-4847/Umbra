@@ -6,6 +6,7 @@ import { SaveData } from './core/SaveData.js';
 import { MAX_STARS, missedReasons, rateLevel } from './game/rating.js';
 import { campaignIds, chapters, hasLevel, loadLevel, nextLevelId } from './levels/index.js';
 import { LevelSelect } from './ui/LevelSelect.js';
+import { TouchControls } from './ui/TouchControls.js';
 import { parseLevel } from './levels/schema.js';
 import { PLAYTEST_STORAGE_KEY } from './levels/playtest.js';
 
@@ -20,10 +21,14 @@ overlay.className = 'overlay';
 document.body.append(hud, overlay);
 
 const save = new SaveData();
+const { input } = game;
+input.applySettings(save.data.settings);
+const touch = new TouchControls(input);
 const levelSelect = new LevelSelect({
   chapters,
   campaignIds,
   save,
+  input,
   onPick: (id) => {
     levelSelect.close();
     goToLevel(id);
@@ -41,15 +46,33 @@ let recordsProgress = false;
 
 const div = (className, textContent) => Object.assign(document.createElement('div'), { className, textContent });
 
-function showOverlay(tone, title, hint, ...middle) {
+/** `actions`: [[action, text], ...] become buttons that also show the key/button for the active input mode. */
+function showOverlay(tone, title, actions, ...middle) {
+  const buttons = div('overlay-actions');
+  for (const [action, text] of actions) {
+    const button = Object.assign(document.createElement('button'), { className: 'overlay-action', type: 'button', tabIndex: -1 });
+    button.textContent = input.activeMode === 'touch' ? text : `${input.label(action)} · ${text}`;
+    button.addEventListener('click', () => input.press(action));
+    buttons.append(button);
+  }
   overlay.className = `overlay visible ${tone}`;
-  overlay.replaceChildren(div('overlay-title', title), ...middle, div('overlay-hint', hint));
+  overlay.replaceChildren(div('overlay-title', title), ...middle, buttons);
 }
+
+// The prompts name keys/buttons, so redraw them when the player switches device.
+let overlayRedraw = null;
+input.onModeChange(() => overlayRedraw?.());
 
 /** CLEAR screen: stars for this run, what cost a star, and what it added to the save. */
 function showResults(stats) {
   const { stars } = rateLevel(stats, levelData.targetTime);
   const result = recordsProgress ? save.recordResult(levelData.id, stats, levelData.targetTime) : null;
+  const draw = () => drawResults(stats, stars, result);
+  overlayRedraw = draw;
+  draw();
+}
+
+function drawResults(stats, stars, result) {
 
   const starRow = div('overlay-stars');
   for (let i = 0; i < MAX_STARS; i++) {
@@ -68,10 +91,18 @@ function showResults(stats) {
   }
 
   const next = nextLevelId(levelData.id);
-  showOverlay('clear', 'CLEAR', `${next ? 'Enter: next level · ' : ''}R: replay · Esc: levels`, starRow, lines);
+  const actions = [['restart', 'Replay'], ['menu', 'Levels']];
+  if (next) actions.unshift(['confirm', 'Next level']);
+  showOverlay('clear', 'CLEAR', actions, starRow, lines);
+}
+
+function showFailed() {
+  overlayRedraw = showFailed;
+  showOverlay('fail', 'CAUGHT', [['restart', 'Retry'], ['menu', 'Levels']]);
 }
 
 function hideOverlay() {
+  overlayRedraw = null;
   overlay.className = 'overlay';
 }
 
@@ -90,7 +121,7 @@ function startLevel() {
   hideOverlay();
   hudText = '';
 
-  level.on('failed', () => showOverlay('fail', 'CAUGHT', 'R: retry · Esc: levels'));
+  level.on('failed', showFailed);
   level.on('completed', showResults);
 
   camera = new Camera(level.player, { lerpSpeed: 6 });
@@ -99,7 +130,7 @@ function startLevel() {
     camera.x = level.player.x;
     camera.y = level.player.y;
   });
-  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect };
+  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect, touch };
 }
 
 async function goToLevel(id) {
@@ -127,7 +158,7 @@ function updateHud() {
   const boss = level.bossStatus();
   if (boss) lines.push(boss);
   const hint = level.interactionHint();
-  if (hint) lines.push(hint);
+  if (hint) lines.push(`${input.label('interact')} — ${hint}`);
   const text = [levelData.name, ...lines].join('\n');
   if (text !== hudText) {
     hudText = text;
@@ -155,17 +186,18 @@ async function boot() {
     }
   } catch (err) {
     console.error(err);
-    showOverlay('fail', 'LEVEL ERROR', err.message);
+    showOverlay('fail', 'LEVEL ERROR', [], div('overlay-lines', err.message));
   }
 }
 
 await boot();
 
 game.onUpdate((delta) => {
+  touch.setVisible(input.activeMode === 'touch' && !levelSelect.isOpen);
   if (!level || loading) return;
 
-  // The level select pauses the game underneath it.
-  if (game.input.wasActionPressed('menu')) {
+  // The menu pauses the game underneath it.
+  if (game.input.wasActionPressed('menu') || (levelSelect.isOpen && game.input.wasActionPressed('back'))) {
     if (levelSelect.isOpen) levelSelect.close();
     else levelSelect.open(levelData.id);
     return;

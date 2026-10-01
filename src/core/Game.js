@@ -42,6 +42,7 @@ export class Game {
   }
 
   _update(deltaSeconds) {
+    this.input.update();
     for (const callback of this.updateCallbacks) {
       callback(deltaSeconds);
     }

@@ -1022,14 +1022,14 @@ export class Level extends EventEmitter {
     return this.bossNotice.timer > 0 ? this.bossNotice.text : null;
   }
 
-  /** HUD hint for what E would do right now. */
+  /** HUD hint for what the interact action would do right now (the HUD adds the key/button name). */
   interactionHint() {
     if (this.finished || this.player.inTransit) return null;
     const pad = this.linkInReach();
-    if (pad) return pad.link.kind === 'elevator' ? 'E — ride the elevator' : 'E — take the stairs';
-    if (this.player.dragging) return this.waterInReach() ? 'E — sink the body' : null;
+    if (pad) return pad.link.kind === 'elevator' ? 'ride the elevator' : 'take the stairs';
+    if (this.player.dragging) return this.waterInReach() ? 'sink the body' : null;
     const panel = this.hackablePanel();
-    if (panel) return this.gates.some((g) => g.panel === panel && !g.open) ? 'E — hack the panel (opens a gate)' : 'E — disable alarm panel';
+    if (panel) return this.gates.some((g) => g.panel === panel && !g.open) ? 'hack the panel (opens a gate)' : 'disable alarm panel';
     return null;
   }
 

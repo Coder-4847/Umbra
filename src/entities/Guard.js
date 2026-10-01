@@ -1,4 +1,5 @@
 import { coneColors } from '../core/visual.js';
+import { GUARD_SHAPES, TARGET_SHAPES, drawShapes } from './shapes.js';
 import { Container, EventEmitter, Graphics, Text } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
 import { raycast, hasLineOfSight } from '../world/raycast.js';
@@ -565,8 +566,7 @@ export class Guard extends EventEmitter {
     const view = new Container();
 
     this.body = new Graphics();
-    this.body.circle(0, 0, HALF_SIZE).fill(this.target ? 0xd9534f : 0x5b8def);
-    this.body.poly([HALF_SIZE + 6, 0, HALF_SIZE - 4, -5, HALF_SIZE - 4, 5]).fill(0xdbe7ff);
+    drawShapes(this.body, this.target ? TARGET_SHAPES : GUARD_SHAPES);
     if (this.target) this.body.circle(0, 0, HALF_SIZE + 4).stroke({ width: 2, color: 0xff8a80, alpha: 0.9 });
 
     this.meterBar = new Graphics();

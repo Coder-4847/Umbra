@@ -1,3 +1,4 @@
+import { BOSS_SHAPES, drawShapes } from './shapes.js';
 import { Graphics, Text } from 'pixi.js';
 import { Guard, GuardState } from './Guard.js';
 import { VISION_FOV, VISION_RANGE } from './vision.js';
@@ -111,8 +112,7 @@ export class Boss extends Guard {
     const view = super._buildView();
     // Bigger, gold-trimmed, and wearing its remaining health.
     this.body.clear();
-    this.body.circle(0, 0, BODY_RADIUS).fill(0x7a3fbf).stroke({ width: 3, color: GOLD });
-    this.body.poly([BODY_RADIUS + 7, 0, BODY_RADIUS - 3, -6, BODY_RADIUS - 3, 6]).fill(GOLD);
+    drawShapes(this.body, BOSS_SHAPES, 1.3);
     this.hpPips = new Graphics();
     this.nameTag = new Text({
       text: '',

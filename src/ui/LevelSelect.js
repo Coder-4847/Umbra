@@ -1,3 +1,4 @@
+import { audio } from '../core/Audio.js';
 import { SKINS, skinSvg } from '../entities/skins.js';
 import { MAX_STARS } from '../game/rating.js';
 import { SettingsPane } from './SettingsPane.js';
@@ -100,7 +101,10 @@ export class LevelSelect {
     this.settings.reset();
     this.isOpen = false;
     this.root.classList.remove('visible');
-    if (!silent) this.onClose?.();
+    if (!silent) {
+      audio.play('uiBack');
+      this.onClose?.();
+    }
   }
 
   handleInput(input) {
@@ -119,6 +123,7 @@ export class LevelSelect {
         this.row = (this.row + dRow + this.chapters.length) % this.chapters.length;
         const count = this.chapters[this.row].ids.length;
         this.col = Math.min((this.col + dCol + count) % count, count - 1);
+        audio.play('uiMove');
         this._highlight();
       }
       if (input.wasActionPressed('confirm')) this._pick(this.chapters[this.row].ids[this.col]);
@@ -128,6 +133,7 @@ export class LevelSelect {
       if (dRow || dCol) {
         const next = this.skinIndex + dCol + dRow * SKIN_COLUMNS;
         if (next >= 0 && next < SKINS.length) this.skinIndex = next;
+        audio.play('uiMove');
         this.message = '';
         this._render();
       }
@@ -136,6 +142,7 @@ export class LevelSelect {
   }
 
   _setTab(tab) {
+    if (tab !== this.tab) audio.play('uiMove');
     this.tab = tab;
     this.message = '';
     this.settings.reset();
@@ -143,7 +150,11 @@ export class LevelSelect {
   }
 
   _pick(id) {
-    if (!this.save.isUnlocked(id, this.campaignIds)) return;
+    if (!this.save.isUnlocked(id, this.campaignIds)) {
+      audio.play('uiDeny');
+      return;
+    }
+    audio.play('uiSelect');
     this.onPick(id);
   }
 
@@ -155,12 +166,15 @@ export class LevelSelect {
     if (!save.ownsSkin(skin.id)) {
       if (!save.buySkin(skin.id)) {
         this.message = `Not enough stars: ${skin.name} costs ${skin.price}, you have ${save.currency()}`;
+        audio.play('uiDeny');
         this._render();
         return;
       }
       this.message = `Bought ${skin.name} for ${skin.price} ★`;
+      audio.play('uiBuy');
     } else {
       this.message = '';
+      audio.play('uiSelect');
     }
     save.selectSkin(skin.id);
     this.onSkinChange?.(skin.id);

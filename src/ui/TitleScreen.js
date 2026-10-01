@@ -1,3 +1,5 @@
+import { audio } from '../core/Audio.js';
+
 const el = (tag, className, text) => {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -65,12 +67,14 @@ export class TitleScreen {
   }
 
   _select(index) {
+    if (index !== this.index) audio.play('uiMove');
     this.index = index;
     this.root.querySelectorAll('.title-item').forEach((node, i) => node.classList.toggle('selected', i === index));
   }
 
   _activate(index) {
     this._select(index);
+    audio.play('uiSelect');
     this.onAction(this.items[index].id);
   }
 

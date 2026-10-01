@@ -103,7 +103,8 @@ const OBJECTIVE_LABELS = {
  *
  * Events: 'failed' (stats) when the player dies, 'completed' (stats) when all
  * objectives are done, 'alarm' when a guard raises a full alarm at a panel,
- * 'transit' when the player arrives by stairs or elevator.
+ * 'transit' when the player arrives by stairs or elevator, and 'fx' (name, x, y)
+ * for anything worth a sound or a screen shake (main.js decides what it gets).
  */
 export class Level extends EventEmitter {
   constructor(data, { skin, demo = false } = {}) {
@@ -331,6 +332,7 @@ export class Level extends EventEmitter {
       if (item.collected || Math.hypot(item.x - player.x, item.y - player.y) > PICKUP_RANGE) continue;
       item.collected = true;
       this.effects.burst(item.x, item.y, COLOR.intel);
+      this.emit('fx', 'intel', item.x, item.y);
     }
 
     const othersDone = this.objectiveStatus().every((s) => s.id === 'exit' || s.done);
@@ -359,16 +361,37 @@ export class Level extends EventEmitter {
     if (this.objectives.includes('exit')) {
       const pulse = 0.5 + 0.5 * Math.sin(this.time * 3);
       for (const exit of this.exits) {
-        const color = this.exitUnlocked ? COLOR.exit : COLOR.exitLocked;
-        g.rect(exit.x - 16, exit.y - 16, 32, 32)
-          .fill({ color, alpha: this.exitUnlocked ? 0.2 + 0.25 * pulse : 0.2 })
-          .stroke({ width: 2, color, alpha: this.exitUnlocked ? 0.9 : 0.5 });
+        const open = this.exitUnlocked;
+        const color = open ? COLOR.exit : COLOR.exitLocked;
+        const { x, y } = exit;
+        g.rect(x - 15, y - 15, 30, 30).fill({ color, alpha: open ? 0.1 + 0.16 * pulse : 0.1 });
+        // Corner brackets: an extraction zone painted on the floor.
+        for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+          g.moveTo(x + sx * 15, y + sy * 7).lineTo(x + sx * 15, y + sy * 15).lineTo(x + sx * 7, y + sy * 15);
+        }
+        g.stroke({ width: 2, color, alpha: open ? 0.95 : 0.5 });
+        // Chevrons that march once the exit is open; a bar while it's locked.
+        if (open) {
+          const lift = (this.time * 1.4) % 1;
+          for (const offset of [0, 7]) {
+            const cy = y + 5 + offset - lift * 7;
+            g.moveTo(x - 6, cy).lineTo(x, cy - 5).lineTo(x + 6, cy);
+          }
+          g.stroke({ width: 2, color, alpha: 0.9 });
+        } else {
+          g.rect(x - 6, y - 1.5, 12, 3).fill({ color, alpha: 0.6 });
+        }
       }
     }
     for (const item of this.intel) {
       if (item.collected) continue;
+      // A dossier folder, bobbing so it catches the eye.
+      const { x } = item;
       const y = item.y + Math.sin(this.time * 3 + item.x) * 2;
-      g.poly([item.x, y - 8, item.x + 6, y, item.x, y + 8, item.x - 6, y]).fill(COLOR.intel);
+      g.rect(x - 8, y - 8, 7, 4).fill(COLOR.intel);
+      g.rect(x - 8, y - 5, 16, 11).fill(COLOR.intel).stroke({ width: 1, color: 0x5c4310 });
+      g.rect(x - 5, y - 1, 10, 1.5).fill(0x5c4310);
+      g.rect(x - 5, y + 2, 6, 1.5).fill(0x5c4310);
     }
   }
 
@@ -399,9 +422,11 @@ export class Level extends EventEmitter {
       if (this.stepTimer <= 0) {
         if (player.sprinting) {
           this.emitNoise(player.x, player.y, SPRINT_NOISE_RADIUS, false);
+          this.emit('fx', 'step', player.x, player.y);
           this.stepTimer = SPRINT_STEP_INTERVAL;
         } else {
           this.emitNoise(player.x, player.y, SPLASH_NOISE_RADIUS, false, { color: COLOR.water });
+          this.emit('fx', 'splash', player.x, player.y);
           this.stepTimer = SPLASH_STEP_INTERVAL;
         }
       }
@@ -451,6 +476,7 @@ export class Level extends EventEmitter {
     player.facing = Math.atan2(target.y - player.y, target.x - player.x);
     player.lockTimer = TAKEDOWN_LOCK_TIME;
     this.effects.burst(target.x, target.y, silent ? COLOR.silent : COLOR.alarm);
+    this.emit('fx', silent ? 'takedown' : 'takedownLoud', target.x, target.y);
     if (!silent) this.emitNoise(target.x, target.y, LOUD_KILL_NOISE_RADIUS, true);
   }
 
@@ -467,6 +493,7 @@ export class Level extends EventEmitter {
       const away = Math.atan2(player.y - boss.y, player.x - boss.x);
       moveAndCollide(player, Math.cos(away) * BOSS_PARRY_PUSH, Math.sin(away) * BOSS_PARRY_PUSH, this.tilemap);
       this.effects.burst(boss.x, boss.y, COLOR.alarm);
+      this.emit('fx', 'parry', boss.x, boss.y);
       this.emitNoise(boss.x, boss.y, LOUD_KILL_NOISE_RADIUS, true);
       boss.alertTo(player.x, player.y);
       return;
@@ -476,6 +503,7 @@ export class Level extends EventEmitter {
     boss.wound();
     this.effects.burst(x, y, COLOR.smoke);
     this.effects.ring(x, y, 40, COLOR.smoke, 0.6);
+    this.emit('fx', 'bossWound', x, y);
     this.emitNoise(x, y, BOSS_WOUND_NOISE_RADIUS, false, { color: COLOR.smoke });
     this.bossNotice = { text: `⚔ ${boss.name} is wounded and slips away in the smoke`, timer: BOSS_NOTICE_TIME };
   }
@@ -496,6 +524,7 @@ export class Level extends EventEmitter {
     // Reinforcements draw above the player like everyone else.
     this.entityLayer.addChild(this.player.view);
     this.effects.ring(boss.x, boss.y, 60, COLOR.boss, 0.9);
+    this.emit('fx', 'bossReappear', boss.x, boss.y);
     const hint = boss.phases[phaseIndex].hint;
     const extra = arriving.length ? ' Reinforcements have arrived.' : '';
     this.bossNotice = { text: `⚔ ${boss.name} regroups${hint ? ` — ${hint}` : ''}.${extra}`, timer: BOSS_NOTICE_TIME };
@@ -536,12 +565,14 @@ export class Level extends EventEmitter {
     if (!nearest) return;
     nearest.carried = true;
     player.dragging = nearest;
+    this.emit('fx', 'grab', player.x, player.y);
   }
 
   _drop() {
     const body = this.player.dragging;
     body.carried = false;
     this.player.dragging = null;
+    this.emit('fx', 'drop', body.x, body.y);
     if (this.tilemap.isBlockedAtWorld(body.x, body.y)) {
       body.x = this.player.x;
       body.y = this.player.y;
@@ -570,6 +601,8 @@ export class Level extends EventEmitter {
     this.stats.bodiesSunk++;
     player.lockTimer = SINK_LOCK_TIME;
     this.effects.burst(water.x, water.y, COLOR.water);
+    this.effects.sparks(water.x, water.y, COLOR.water, 14, 110);
+    this.emit('fx', 'sink', water.x, water.y);
     this.emitNoise(water.x, water.y, SINK_NOISE_RADIUS, false, { color: COLOR.water });
   }
 
@@ -630,6 +663,7 @@ export class Level extends EventEmitter {
   _onGuardSpottedPlayer(caller) {
     this.stats.detections++;
     this.effects.ring(caller.x, caller.y, BACKUP_RADIUS, COLOR.alarm, 0.8);
+    this.emit('fx', 'spotted', caller.x, caller.y);
     for (const guard of this.guards) {
       if (guard === caller) continue;
       const inEarshot =
@@ -650,6 +684,7 @@ export class Level extends EventEmitter {
   _onDogBark(dog, isFirst) {
     if (isFirst) this.stats.detections++;
     this.effects.ring(dog.x, dog.y, BARK_RADIUS, COLOR.bark, isFirst ? 0.8 : 0.5);
+    this.emit('fx', 'bark', dog.x, dog.y);
     const floor = this.floorAt(dog.x, dog.y);
     for (const guard of this.guards) {
       if (guard === dog || this.floorAt(guard.x, guard.y) !== floor) continue;
@@ -669,6 +704,7 @@ export class Level extends EventEmitter {
     if (!player.takeDamage(1)) return;
     this.effects.burst(player.x, player.y, COLOR.alarm);
     this.effects.ring(dog.x, dog.y, 30, COLOR.alarm, 0.25);
+    this.emit('fx', 'hurt', player.x, player.y);
     if (player.dead) this._fail();
   }
 
@@ -697,6 +733,7 @@ export class Level extends EventEmitter {
     }
     this.player.lockTimer = HACK_LOCK_TIME;
     this.effects.burst(panel.x, panel.y, COLOR.hack);
+    this.emit('fx', 'hack', panel.x, panel.y);
   }
 
   /** The guard who spotted the player breaks off to raise the alarm, if a working panel is near. */
@@ -737,6 +774,7 @@ export class Level extends EventEmitter {
     this._clearAlarmRunner();
     this.effects.ring(panel.x, panel.y, Math.max(this.tilemap.pixelWidth, this.tilemap.pixelHeight), COLOR.alarm, 1.4);
     for (const other of this.guards) other.alertTo(guard.lastKnown.x, guard.lastKnown.y);
+    this.emit('fx', 'alarm', this.player.x, this.player.y);
     this.emit('alarm');
   }
 
@@ -761,6 +799,7 @@ export class Level extends EventEmitter {
     this.stats.lasersTripped++;
     this.stats.detections++;
     this.effects.ring(player.x, player.y, LASER_ALARM_RADIUS, COLOR.alarm, 1);
+    this.emit('fx', 'laser', player.x, player.y);
     for (const guard of this.guards) {
       if (Math.hypot(guard.x - player.x, guard.y - player.y) > LASER_ALARM_RADIUS) continue;
       guard.alertTo(player.x, player.y);
@@ -770,14 +809,17 @@ export class Level extends EventEmitter {
   _onGuardShoot(guard) {
     const { player } = this;
     this.effects.tracer(guard.x, guard.y, player.x, player.y, COLOR.tracer);
+    this.emit('fx', 'shot', guard.x, guard.y);
     if (!player.takeDamage(1)) return;
     this.effects.burst(player.x, player.y, COLOR.alarm);
+    this.emit('fx', 'hurt', player.x, player.y);
     if (player.dead) this._fail();
   }
 
   _onBodyFound(finder, body, radius = BACKUP_RADIUS) {
     this.stats.bodiesDiscovered++;
     this.effects.ring(finder.x, finder.y, radius, COLOR.body, 0.8);
+    this.emit('fx', 'bodyFound', finder.x, finder.y);
     for (const guard of this.guards) {
       if (guard === finder) continue;
       const nearby = Math.hypot(guard.x - finder.x, guard.y - finder.y) <= radius;
@@ -816,6 +858,7 @@ export class Level extends EventEmitter {
     if (isNewAlarm) {
       this.stats.detections++;
       this.effects.ring(camera.x, camera.y, CAMERA_ALARM_RADIUS, COLOR.alarm, 1);
+      this.emit('fx', 'cameraAlarm', camera.x, camera.y);
     }
     for (const guard of this.guards) {
       if (Math.hypot(guard.x - camera.x, guard.y - camera.y) > CAMERA_ALARM_RADIUS) continue;
@@ -949,6 +992,7 @@ export class Level extends EventEmitter {
     const { player } = this;
     const to = from === link.a ? link.b : link.a;
     this.effects.burst(from.x, from.y, COLOR.link);
+    this.emit('fx', link.kind === 'elevator' ? 'elevator' : 'stairs', from.x, from.y);
     if (link.kind === 'elevator') {
       player.inTransit = true;
       if (player.dragging) player.dragging.view.visible = false;
@@ -983,7 +1027,10 @@ export class Level extends EventEmitter {
     this.scent?.jump(player);
     this._syncFloor();
     this.effects.burst(to.x, to.y, COLOR.link);
-    if (link.kind === 'elevator') this.emitNoise(to.x, to.y, ELEVATOR_DING_RADIUS, false, { color: COLOR.link });
+    if (link.kind === 'elevator') {
+      this.emitNoise(to.x, to.y, ELEVATOR_DING_RADIUS, false, { color: COLOR.link });
+      this.emit('fx', 'ding', to.x, to.y);
+    }
     this.emit('transit');
   }
 
@@ -1011,6 +1058,7 @@ export class Level extends EventEmitter {
         if (!nearest) continue;
         nearest.investigate(spot.x, spot.y);
         this.effects.ring(nearest.x, nearest.y, 60, COLOR.radio, 0.8);
+        this.emit('fx', 'radio', nearest.x, nearest.y);
       }
       this.stats.radioChecksFailed += channel.missing.length;
       channel.missing = [];
@@ -1058,6 +1106,7 @@ export class Level extends EventEmitter {
   _flushBirds(flock) {
     flock.flush();
     this.stats.wildlifeFlushed++;
+    this.emit('fx', 'birds', flock.x, flock.y);
     this.emitNoise(flock.x, flock.y, BIRD_NOISE_RADIUS, false, { fromWildlife: true });
   }
 

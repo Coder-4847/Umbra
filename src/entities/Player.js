@@ -1,5 +1,6 @@
 import { Container, Graphics } from 'pixi.js';
 import { moveAndCollide } from '../world/collision.js';
+import { drawShapes } from './shapes.js';
 import { getSkin } from './skins.js';
 
 const HALF_SIZE = 10;
@@ -76,16 +77,8 @@ export class Player {
   }
 
   _drawSkin() {
-    const g = this.body;
-    g.clear();
-    for (const s of getSkin(this.skinId).shapes) {
-      if (s.type === 'circle') g.circle(s.x, s.y, s.r);
-      else if (s.type === 'ellipse') g.ellipse(s.x, s.y, s.rx, s.ry);
-      else if (s.type === 'rect') g.rect(s.x, s.y, s.w, s.h);
-      else g.poly(s.points);
-      g.fill({ color: s.fill, alpha: s.alpha ?? 1 });
-      if (s.stroke !== undefined) g.stroke({ color: s.stroke, width: s.width ?? 1 });
-    }
+    this.body.clear();
+    drawShapes(this.body, getSkin(this.skinId).shapes);
   }
 
   _syncView() {

@@ -1,4 +1,5 @@
 import { Graphics } from 'pixi.js';
+import { BODY_SHAPES, drawShapes } from './shapes.js';
 
 /**
  * A downed guard, or a knocked-out dog. Guards who see one that isn't
@@ -21,8 +22,7 @@ export class Body {
       this.view.circle(7, -3, 5).fill(0x8a5f3a);
       this.view.ellipse(-9, 5, 5, 2).fill(0x4a3020);
     } else {
-      this.view.ellipse(0, 0, 13, 8).fill(0x34466b);
-      this.view.circle(9, 0, 5).fill(0x4a5f8c);
+      drawShapes(this.view, BODY_SHAPES);
     }
     this.view.rotation = facing;
     this._drawnDiscovered = false;

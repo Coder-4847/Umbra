@@ -1,3 +1,4 @@
+import { audio } from '../core/Audio.js';
 import { applyVisualSettings, visual } from '../core/visual.js';
 import { ACTION_NAMES, INPUT_MODES, REBINDABLE_ACTIONS, codeLabel } from '../core/InputManager.js';
 
@@ -8,6 +9,7 @@ const el = (tag, className, text) => {
   return node;
 };
 
+const VOLUME_NAMES = { master: 'Master volume', sfx: 'Sound effects', ambience: 'Ambience' };
 const MODE_NAMES = { auto: 'Auto', keyboard: 'Keyboard & mouse', gamepad: 'Gamepad', touch: 'Touch' };
 
 /**
@@ -25,7 +27,7 @@ export class SettingsPane {
     this.capturing = null; // action waiting for a key
     this.confirmReset = false;
     this.message = '';
-    this.rows = ['mode', 'colorblind', 'reducedMotion', ...REBINDABLE_ACTIONS.map((action) => `bind:${action}`), 'resetKeys', 'resetProgress'];
+    this.rows = ['vol:master', 'vol:sfx', 'vol:ambience', 'mode', 'colorblind', 'reducedMotion', ...REBINDABLE_ACTIONS.map((action) => `bind:${action}`), 'resetKeys', 'resetProgress'];
   }
 
   reset() {
@@ -41,7 +43,12 @@ export class SettingsPane {
       this.index = (this.index + step + this.rows.length) % this.rows.length;
       this.confirmReset = false;
       this.message = '';
+      audio.play('uiMove');
       this.onChange();
+    }
+    if (this.rows[this.index].startsWith('vol:')) {
+      if (input.wasActionPressed('left')) this._changeVolume(this.rows[this.index].slice(4), -0.1);
+      if (input.wasActionPressed('right')) this._changeVolume(this.rows[this.index].slice(4), 0.1);
     }
     if (this.rows[this.index] === 'mode') {
       if (input.wasActionPressed('left')) this._cycleMode(-1);
@@ -57,7 +64,13 @@ export class SettingsPane {
     if (row !== 'resetProgress') this.confirmReset = false;
     this.message = '';
 
-    if (row === 'mode') this._cycleMode(1);
+    if (!row.startsWith('vol:')) audio.play('uiSelect');
+    if (row.startsWith('vol:')) {
+      // Confirm / click steps up and wraps to silent.
+      const key = row.slice(4);
+      this._changeVolume(key, audio.volume[key] >= 0.999 ? -1 : 0.1);
+      return;
+    } else if (row === 'mode') this._cycleMode(1);
     else if (row === 'colorblind' || row === 'reducedMotion') {
       this.save.setSettings({ [row]: !visual[row] });
       applyVisualSettings(this.save.data.settings);
@@ -75,6 +88,13 @@ export class SettingsPane {
         this.onProgressReset?.();
       }
     }
+    this.onChange();
+  }
+
+  _changeVolume(key, delta) {
+    audio.setVolume({ [key]: Math.round((audio.volume[key] + delta) * 10) / 10 });
+    this.save.setSettings({ volume: { ...audio.volume } });
+    audio.play('uiSelect');
     this.onChange();
   }
 
@@ -112,7 +132,11 @@ export class SettingsPane {
     };
 
     this.rows.forEach((row, index) => {
-      if (row === 'mode') {
+      if (row.startsWith('vol:')) {
+        const key = row.slice(4);
+        const steps = Math.round(audio.volume[key] * 10);
+        addRow(index, VOLUME_NAMES[key], `◂ ${'▮'.repeat(steps)}${'▯'.repeat(10 - steps)} ${steps * 10}% ▸`);
+      } else if (row === 'mode') {
         const detail = input.mode === 'auto' ? ` (${MODE_NAMES[input.activeMode]})` : '';
         addRow(index, 'Input mode', `◂ ${MODE_NAMES[input.mode]}${detail} ▸`);
       } else if (row === 'colorblind') {

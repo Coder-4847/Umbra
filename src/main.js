@@ -1,4 +1,5 @@
 import './style.css';
+import { audio } from './core/Audio.js';
 import { Game } from './core/Game.js';
 import { Camera } from './core/Camera.js';
 import { Level } from './game/Level.js';
@@ -40,6 +41,33 @@ const save = new SaveData();
 const { input } = game;
 input.applySettings(save.data.settings);
 applyVisualSettings(save.data.settings);
+audio.init();
+audio.setVolume(save.data.settings.volume);
+
+// What each level 'fx' cue gets: a sound (same name unless given), camera shake
+// (trauma 0..1) and hit-stop (seconds the level freezes). Kept restrained: stealth stays calm.
+const FX = {
+  takedown: { freeze: 0.05 },
+  takedownLoud: { shake: 0.3, freeze: 0.06 },
+  parry: { shake: 0.35, freeze: 0.06 },
+  bossWound: { shake: 0.3, freeze: 0.1 },
+  hurt: { shake: 0.55, freeze: 0.08 },
+  shot: { shake: 0.12 },
+  alarm: { shake: 0.45 },
+  laser: { shake: 0.25 },
+  cameraAlarm: { shake: 0.2 },
+  spotted: { shake: 0.15 },
+};
+const MAX_SHAKE = 7; // px at full trauma
+let trauma = 0;
+let hitStop = 0;
+
+function onFx(name, x, y) {
+  const fx = FX[name] ?? {};
+  audio.play(fx.sound ?? name, { x, y });
+  if (fx.shake) trauma = Math.min(1, trauma + fx.shake);
+  if (fx.freeze) hitStop = Math.max(hitStop, fx.freeze);
+}
 const touch = new TouchControls(input);
 const levelSelect = new LevelSelect({
   chapters,
@@ -131,6 +159,9 @@ function showResults(stats) {
   overlayRedraw = draw;
   overlay.classList.remove('instant');
   draw();
+  audio.play('clear');
+  // One chime per star, in step with the stars popping in.
+  for (let i = 0; i < stars; i++) setTimeout(() => audio.play('star'), visual.reducedMotion ? 0 : 350 + i * 160);
 }
 
 function drawResults(stats, stars, result) {
@@ -158,6 +189,13 @@ function drawResults(stats, stars, result) {
   const actions = [['restart', 'Replay'], ['menu', 'Levels'], ['home', 'Main menu']];
   if (next) actions.unshift(['confirm', 'Next level']);
   showOverlay('clear', campaignDone ? 'CAMPAIGN COMPLETE' : 'CLEAR', actions, starRow, lines);
+}
+
+function onFailed() {
+  audio.play('fail');
+  trauma = Math.min(1, trauma + 0.4);
+  overlay.classList.remove('instant');
+  showFailed();
 }
 
 function showFailed() {
@@ -188,8 +226,12 @@ function mountLevel(data, options) {
 
 function startLevel() {
   mountLevel(levelData, { skin: save.selectedSkin() });
-  level.on('failed', showFailed);
+  level.on('failed', onFailed);
   level.on('completed', showResults);
+  level.on('fx', onFx);
+  audio.setAmbience(levelData.chapter ?? 0);
+  trauma = 0;
+  hitStop = 0;
 
   camera = new Camera(level.player, { lerpSpeed: 6 });
   // A floor change is a cut, not a pan across the building.
@@ -208,7 +250,7 @@ function startLevel() {
 }
 
 function exposeDebug() {
-  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect, touch, title, scene };
+  if (import.meta.env.DEV) window.__debug = { game, level, camera, levelData, save, levelSelect, touch, title, scene, audio };
 }
 
 /** Fade to black, run `swap`, fade back. Skipped under reduced motion. */
@@ -274,6 +316,8 @@ async function loadDemo() {
   demoTarget.x = level.tilemap.pixelWidth / 2;
   demoTarget.y = level.tilemap.pixelHeight / 2;
   camera = new Camera(demoTarget, { lerpSpeed: 1.2 });
+  audio.setAmbience(data.chapter ?? 0);
+  audio.setTension(0);
   exposeDebug();
 }
 
@@ -407,8 +451,16 @@ game.onUpdate((delta) => {
     if (next) goToLevel(next);
   }
 
-  level.update(delta, input);
+  // Hit-stop: the level holds for a few frames so a takedown or a hit lands.
+  if (hitStop > 0) hitStop -= delta;
+  else level.update(delta, input);
   updateHud();
+
+  const { player } = level;
+  audio.setListener(player.x, player.y);
+  let tension = level.fullAlarm ? 1 : 0;
+  if (!level.finished) for (const guard of level.guards) tension = Math.max(tension, guard.state === 'alert' ? 1 : guard.state === 'suspicious' ? 0.5 : 0);
+  audio.setTension(level.finished ? 0 : tension);
 
   const { tilemap } = level;
   const halfW = game.app.screen.width / 2;
@@ -423,4 +475,13 @@ game.onUpdate((delta) => {
   };
   camera.update(delta);
   camera.applyTo(game.world);
+
+  if (trauma > 0) {
+    if (!visual.reducedMotion) {
+      const reach = trauma * trauma * MAX_SHAKE;
+      game.world.pivot.x += (Math.random() * 2 - 1) * reach;
+      game.world.pivot.y += (Math.random() * 2 - 1) * reach;
+    }
+    trauma = Math.max(0, trauma - delta * 2.4);
+  }
 });
